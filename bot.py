@@ -22,7 +22,7 @@ def getMessage():
 @app.route("/")
 def webhook():
     bot.remove_webhook()
-    bot.set_webhook(url="https://YOUR-RENDER-APP.onrender.com/" + BOT_TOKEN)
+    bot.set_webhook(url="https://xxx-etbu.onrender.com/" + BOT_TOKEN)
     return "Webhook set", 200
 
 # --- Bot Handlers ---
