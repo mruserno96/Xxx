@@ -1,46 +1,58 @@
 import os
 import json
+import time
+import threading
 import requests
 import telebot
 from flask import Flask, request
+from supabase import create_client, Client
 
-# GitHub Gist ID और Personal Access Token
-GIST_ID = "40289f54f8e2c1eb3ba2894ab477f5cd"
-GITHUB_TOKEN = "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"
-API_URL = "https://leakosintapi.com/"
-
-# Telegram Bot Token और Admin ID
+# ------------------ ENV ------------------ #
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_ID = 8356178010
+API_TOKEN = os.getenv("API_TOKEN")
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+ADMIN_ID = int(os.getenv("ADMIN_ID", 0))
 
+if not BOT_TOKEN or not API_TOKEN or not SUPABASE_URL or not SUPABASE_KEY or not ADMIN_ID:
+    raise ValueError("All required env variables must be set!")
+
+# ------------------ SUPABASE ------------------ #
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+def is_admin(user_id: int) -> bool:
+    """Check if the user is an admin in Supabase table"""
+    data = supabase.table("admins").select("user_id").eq("user_id", user_id).execute()
+    return bool(data.data)
+
+def add_admin(user_id: int):
+    supabase.table("admins").insert({"user_id": user_id}).execute()
+
+def remove_admin(user_id: int):
+    supabase.table("admins").delete().eq("user_id", user_id).execute()
+
+# ------------------ TELEGRAM SETUP ------------------ #
+API_URL = "https://leakosintapi.com/"
 bot = telebot.TeleBot(BOT_TOKEN)
 app = Flask(__name__)
 
-# Gist URL
-GIST_URL = f"https://api.github.com/gists/{GIST_ID}"
+# ------------------ AUTO PING ------------------ #
+def auto_ping():
+    payload = {"token": API_TOKEN, "request": "ping", "limit": 1, "lang": "en"}
+    delay = 60
+    max_delay = 3600
+    while True:
+        try:
+            resp = requests.post(API_URL, json=payload, timeout=10)
+            if resp.status_code == 200:
+                delay = 60
+        except requests.exceptions.RequestException:
+            delay = min(delay * 2, max_delay)
+        time.sleep(delay)
 
-# Gist से API Token लोड करें
-def load_token():
-    response = requests.get(GIST_URL)
-    data = response.json()
-    content = data['files']['local.json']['content']
-    return json.loads(content)['API_TOKEN']
+threading.Thread(target=auto_ping, daemon=True).start()
 
-# Gist में API Token सेव करें
-def save_token(new_token):
-    content = json.dumps({"API_TOKEN": new_token}, indent=2)
-    payload = {
-        "files": {
-            "local.json": {
-                "content": content
-            }
-        }
-    }
-    headers = {"Authorization": f"token {GITHUB_TOKEN}"}
-    response = requests.patch(GIST_URL, headers=headers, json=payload)
-    return response.status_code
-
-# Webhook सेट करें
+# ------------------ WEBHOOK ------------------ #
 @app.route("/setwebhook", methods=["GET", "POST"])
 def set_webhook():
     bot.remove_webhook()
@@ -48,81 +60,102 @@ def set_webhook():
     bot.set_webhook(url=f"{url}/{BOT_TOKEN}")
     return "Webhook set", 200
 
-# Telegram से आने वाले संदेशों को हैंडल करें
 @app.route('/' + BOT_TOKEN, methods=['POST'])
-def getMessage():
+def get_message():
     json_str = request.stream.read().decode("utf-8")
     update = telebot.types.Update.de_json(json_str)
     bot.process_new_updates([update])
     return "OK", 200
 
-# /start कमांड हैंडलर
+# ------------------ HANDLERS ------------------ #
 @bot.message_handler(commands=['start'])
-def welcome(message):
-    bot.reply_to(message, "👋 Send a phone number or email — I'll check leaked databases.")
-
-# /settoken कमांड हैंडलर (केवल Admin के लिए)
-@bot.message_handler(commands=['settoken'])
-def set_token(message):
-    if message.from_user.id != ADMIN_ID:
-        bot.reply_to(message, "⛔️ Not authorized")
-        return
-
-    try:
-        new_token = message.text.split(maxsplit=1)[1]
-    except IndexError:
-        bot.reply_to(message, "⚠️ Usage: /settoken NEW_API_TOKEN")
-        return
-
-    status_code = save_token(new_token)
-    if status_code == 200:
-        bot.reply_to(message, "✅ API token updated and saved in Gist")
+def start(message):
+    if is_admin(message.from_user.id):
+        bot.reply_to(message, "👋 Welcome Admin! You can now search numbers, emails, and names.")
     else:
-        bot.reply_to(message, f"❌ Failed to update token: {status_code}")
+        bot.reply_to(
+            message,
+            "✨ Hello! This is **Number To Information Bot**.\n\n"
+            "🔒 Premium Feature: To access search, please contact Admin @WinTheBetWithMe",
+            parse_mode="Markdown"
+        )
 
-# सामान्य संदेश हैंडलर
+@bot.message_handler(commands=['help'])
+def help_cmd(message):
+    if not is_admin(message.from_user.id):
+        bot.reply_to(message, "ℹ️ Contact Admin @WinTheBetWithMe for premium access.")
+        return
+    bot.reply_to(
+        message,
+        "🛠 Available Commands:\n"
+        "/help - Show this help\n"
+        "/addadmin <user_id> - Make a user admin\n"
+        "/removeadmin <user_id> - Remove admin"
+    )
+
+@bot.message_handler(commands=['addadmin'])
+def addadmin_cmd(message):
+    if not is_admin(message.from_user.id):
+        return
+    try:
+        new_admin_id = int(message.text.split()[1])
+        add_admin(new_admin_id)
+        bot.reply_to(message, f"✅ User {new_admin_id} added as admin.")
+    except Exception:
+        bot.reply_to(message, "⚠️ Usage: /addadmin <user_id>")
+
+@bot.message_handler(commands=['removeadmin'])
+def removeadmin_cmd(message):
+    if not is_admin(message.from_user.id):
+        return
+    try:
+        remove_id = int(message.text.split()[1])
+        remove_admin(remove_id)
+        bot.reply_to(message, f"✅ User {remove_id} removed from admins.")
+    except Exception:
+        bot.reply_to(message, "⚠️ Usage: /removeadmin <user_id>")
+
 @bot.message_handler(func=lambda m: True)
 def handle_query(message):
-    query = message.text.strip()
-    if not query:
-        bot.reply_to(message, "⚠️ Please send a phone number or email.")
+    if not is_admin(message.from_user.id):
+        bot.reply_to(
+            message,
+            "⛔ Sorry! Only **Premium Users** can use this feature.\n"
+            "🔒 Contact Admin @WinTheBetWithMe",
+            parse_mode="Markdown"
+        )
         return
 
-    waiting_msg = bot.reply_to(message, f"🔎 Searching for *{query}* … please wait")
+    query = message.text.strip()
+    waiting_msg = bot.reply_to(message, f"🔎 Searching for *{query}* … please wait", parse_mode="Markdown")
     bot.send_chat_action(message.chat.id, 'typing')
 
-    def call_api(limit):
-        payload = {"token": load_token(), "request": query, "limit": limit, "lang": "en"}
-        resp = requests.post(API_URL, json=payload)
-        try:
-            return resp.json()
-        except Exception:
-            return {"Error code": "Invalid JSON response from API"}
+    def call_api_with_retry(payload, max_retries=5, backoff_factor=2):
+        delay = 1
+        for attempt in range(max_retries):
+            try:
+                resp = requests.post(API_URL, json=payload, timeout=15)
+                return resp.json()
+            except (requests.exceptions.RequestException, json.JSONDecodeError):
+                if attempt < max_retries - 1:
+                    time.sleep(delay)
+                    delay *= backoff_factor
+                else:
+                    return {"Error code": "API request failed after retries"}
 
-    # First try with default limit
-    resp = call_api(100)
+    payload = {"token": API_TOKEN, "request": query, "limit": 100, "lang": "en"}
+    resp = call_api_with_retry(payload)
 
-    # If API returns a limit-related error, retry with 100
     if isinstance(resp, dict) and "Error code" in resp:
-        err_text = str(resp["Error code"]).lower()
-        if "limit" in err_text or "100" in err_text and "10000" in err_text:
-            resp = call_api(100)  # retry with minimum acceptable value
-            if isinstance(resp, dict) and "Error code" in resp:
-                bot.edit_message_text(chat_id=message.chat.id, message_id=waiting_msg.message_id,
-                                      text=f"❌ API Error: {resp['Error code']}")
-                return
-        else:
-            bot.edit_message_text(chat_id=message.chat.id, message_id=waiting_msg.message_id,
-                                  text=f"❌ API Error: {resp['Error code']}")
-            return
+        bot.edit_message_text(chat_id=message.chat.id, message_id=waiting_msg.message_id,
+                              text=f"❌ API Error: {resp['Error code']}")
+        return
 
-    # No list found
     if not resp.get("List"):
         bot.edit_message_text(chat_id=message.chat.id, message_id=waiting_msg.message_id,
                               text=f"✅ No leaks found for *{query}*")
         return
 
-    # Build reply (show first 5 records per DB)
     parts = []
     for db, details in resp.get("List", {}).items():
         parts.append(f"*📂 {db}*\n_{details.get('InfoLeak','')}_\n")
@@ -138,6 +171,7 @@ def handle_query(message):
     bot.edit_message_text(chat_id=message.chat.id, message_id=waiting_msg.message_id,
                           text=final, parse_mode="Markdown")
 
+# ------------------ RUN ------------------ #
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
