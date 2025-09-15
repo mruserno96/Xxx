@@ -6,7 +6,7 @@ from flask import Flask, request
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")  # सिर्फ़ Telegram bot का token env से लेंगे
 API_URL = "https://leakosintapi.com/"
-ADMIN_ID = int(os.getenv("ADMIN_ID", "123456789"))  # अपना Telegram user id डालें
+ADMIN_ID = int(os.getenv("ADMIN_ID", "8356178010"))  # अपना Telegram user id डालें
 
 # ---- Load API_TOKEN from local.json ----
 CONFIG_FILE = "local.json"
