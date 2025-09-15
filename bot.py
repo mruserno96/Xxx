@@ -9,29 +9,16 @@ from supabase import create_client, Client
 
 # ------------------ ENV ------------------ #
 BOT_TOKEN = os.getenv("BOT_TOKEN")
+API_TOKEN = os.getenv("API_TOKEN")  # Global API token
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 OWNER_ID = int(os.getenv("ADMIN_ID", 0))  # Bot owner
 
-if not BOT_TOKEN or not SUPABASE_URL or not SUPABASE_KEY or not OWNER_ID:
+if not BOT_TOKEN or not API_TOKEN or not SUPABASE_URL or not SUPABASE_KEY or not OWNER_ID:
     raise ValueError("All required env variables must be set!")
 
 # ------------------ SUPABASE ------------------ #
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-
-# ----------- OWNER / ADMIN FUNCTIONS ----------- #
-def get_owner_token() -> str:
-    result = supabase.table("owner").select("api_token").eq("user_id", OWNER_ID).limit(1).execute()
-    if result.data and "api_token" in result.data[0]:
-        return result.data[0]["api_token"]
-    raise ValueError("Owner API token not set!")
-
-def set_owner_token(new_token: str, propagate_to_admins: bool = False):
-    # Update owner table
-    supabase.table("owner").update({"api_token": new_token}).eq("user_id", OWNER_ID).execute()
-    # Optionally update all admin tokens
-    if propagate_to_admins:
-        supabase.table("admins").update({"api_token": new_token}).execute()
 
 def is_admin(user_id: int) -> bool:
     if user_id == OWNER_ID:
@@ -39,16 +26,8 @@ def is_admin(user_id: int) -> bool:
     data = supabase.table("admins").select("user_id").eq("user_id", user_id).execute()
     return bool(data.data)
 
-def get_admin_token(user_id: int) -> str:
-    if user_id == OWNER_ID:
-        return get_owner_token()
-    result = supabase.table("admins").select("api_token").eq("user_id", user_id).limit(1).execute()
-    if result.data and "api_token" in result.data[0]:
-        return result.data[0]["api_token"]
-    raise ValueError("API token not found for this admin!")
-
-def add_admin(user_id: int, api_token: str):
-    supabase.table("admins").insert({"user_id": user_id, "api_token": api_token}).execute()
+def add_admin(user_id: int):
+    supabase.table("admins").insert({"user_id": user_id}).execute()
 
 def remove_admin(user_id: int):
     supabase.table("admins").delete().eq("user_id", user_id).execute()
@@ -64,8 +43,7 @@ def auto_ping():
     max_delay = 3600
     while True:
         try:
-            token = get_owner_token()
-            payload = {"token": token, "request": "ping", "limit": 1, "lang": "en"}
+            payload = {"token": API_TOKEN, "request": "ping", "limit": 1, "lang": "en"}
             resp = requests.post(API_URL, json=payload, timeout=10)
             if resp.status_code == 200:
                 delay = 60
@@ -106,19 +84,6 @@ def start(message):
             parse_mode="Markdown"
         )
 
-@bot.message_handler(commands=['settoken'])
-def settoken_cmd(message):
-    if message.from_user.id != OWNER_ID:
-        return
-    try:
-        args = message.text.split()
-        new_token = args[1]
-        propagate = args[2].lower() == "true" if len(args) > 2 else False
-        set_owner_token(new_token, propagate_to_admins=propagate)
-        bot.reply_to(message, f"✅ API token updated successfully. Propagate to admins: {propagate}")
-    except IndexError:
-        bot.reply_to(message, "⚠️ Usage: /settoken NEW_API_TOKEN [true|false]")
-
 @bot.message_handler(commands=['help'])
 def help_cmd(message):
     if message.from_user.id != OWNER_ID:
@@ -128,8 +93,7 @@ def help_cmd(message):
         message,
         "🛠 Owner Commands:\n"
         "/help - Show this help\n"
-        "/settoken <token> [true|false] - Update owner token and optionally all admins\n"
-        "/addadmin <user_id> <api_token> - Add admin\n"
+        "/addadmin <user_id> - Add admin\n"
         "/removeadmin <user_id> - Remove admin\n"
         "Admins and owner can search numbers, emails, names"
     )
@@ -140,11 +104,10 @@ def addadmin_cmd(message):
         return
     try:
         new_admin_id = int(message.text.split()[1])
-        api_token = message.text.split()[2]
-        add_admin(new_admin_id, api_token)
+        add_admin(new_admin_id)
         bot.reply_to(message, f"✅ User {new_admin_id} added as admin.")
     except Exception:
-        bot.reply_to(message, "⚠️ Usage: /addadmin <user_id> <api_token>")
+        bot.reply_to(message, "⚠️ Usage: /addadmin <user_id>")
 
 @bot.message_handler(commands=['removeadmin'])
 def removeadmin_cmd(message):
@@ -186,8 +149,7 @@ def handle_query(message):
                 else:
                     return {"Error code": "API request failed after retries"}
 
-    api_token = get_admin_token(user_id)
-    payload = {"token": api_token, "request": query, "limit": 100, "lang": "en"}
+    payload = {"token": API_TOKEN, "request": query, "limit": 100, "lang": "en"}
     resp = call_api_with_retry(payload)
 
     if isinstance(resp, dict) and "Error code" in resp:
