@@ -12,16 +12,18 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 API_TOKEN = os.getenv("API_TOKEN")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-ADMIN_ID = int(os.getenv("ADMIN_ID", 0))
+OWNER_ID = int(os.getenv("ADMIN_ID", 0))  # Bot owner
 
-if not BOT_TOKEN or not API_TOKEN or not SUPABASE_URL or not SUPABASE_KEY or not ADMIN_ID:
+if not BOT_TOKEN or not API_TOKEN or not SUPABASE_URL or not SUPABASE_KEY or not OWNER_ID:
     raise ValueError("All required env variables must be set!")
 
 # ------------------ SUPABASE ------------------ #
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 def is_admin(user_id: int) -> bool:
-    """Check if the user is an admin in Supabase table"""
+    """Check if user is an admin (Supabase)"""
+    if user_id == OWNER_ID:
+        return True  # owner is automatically admin for search
     data = supabase.table("admins").select("user_id").eq("user_id", user_id).execute()
     return bool(data.data)
 
@@ -31,7 +33,7 @@ def add_admin(user_id: int):
 def remove_admin(user_id: int):
     supabase.table("admins").delete().eq("user_id", user_id).execute()
 
-# ------------------ TELEGRAM SETUP ------------------ #
+# ------------------ TELEGRAM ------------------ #
 API_URL = "https://leakosintapi.com/"
 bot = telebot.TeleBot(BOT_TOKEN)
 app = Flask(__name__)
@@ -70,8 +72,11 @@ def get_message():
 # ------------------ HANDLERS ------------------ #
 @bot.message_handler(commands=['start'])
 def start(message):
-    if is_admin(message.from_user.id):
-        bot.reply_to(message, "👋 Welcome Admin! You can now search numbers, emails, and names.")
+    user_id = message.from_user.id
+    if user_id == OWNER_ID:
+        bot.reply_to(message, "👑 Welcome Owner! Full access granted.")
+    elif is_admin(user_id):
+        bot.reply_to(message, "👋 Welcome Admin! You can search numbers, emails, and names.")
     else:
         bot.reply_to(
             message,
@@ -82,20 +87,21 @@ def start(message):
 
 @bot.message_handler(commands=['help'])
 def help_cmd(message):
-    if not is_admin(message.from_user.id):
-        bot.reply_to(message, "ℹ️ Contact Admin @WinTheBetWithMe for premium access.")
+    if message.from_user.id != OWNER_ID:
+        bot.reply_to(message, "ℹ️ Only the bot owner can see help.")
         return
     bot.reply_to(
         message,
-        "🛠 Available Commands:\n"
+        "🛠 Owner Commands:\n"
         "/help - Show this help\n"
-        "/addadmin <user_id> - Make a user admin\n"
-        "/removeadmin <user_id> - Remove admin"
+        "/addadmin <user_id> - Add admin\n"
+        "/removeadmin <user_id> - Remove admin\n"
+        "Admins and owner can search numbers, emails, names"
     )
 
 @bot.message_handler(commands=['addadmin'])
 def addadmin_cmd(message):
-    if not is_admin(message.from_user.id):
+    if message.from_user.id != OWNER_ID:
         return
     try:
         new_admin_id = int(message.text.split()[1])
@@ -106,7 +112,7 @@ def addadmin_cmd(message):
 
 @bot.message_handler(commands=['removeadmin'])
 def removeadmin_cmd(message):
-    if not is_admin(message.from_user.id):
+    if message.from_user.id != OWNER_ID:
         return
     try:
         remove_id = int(message.text.split()[1])
@@ -117,7 +123,8 @@ def removeadmin_cmd(message):
 
 @bot.message_handler(func=lambda m: True)
 def handle_query(message):
-    if not is_admin(message.from_user.id):
+    user_id = message.from_user.id
+    if not is_admin(user_id):
         bot.reply_to(
             message,
             "⛔ Sorry! Only **Premium Users** can use this feature.\n"
