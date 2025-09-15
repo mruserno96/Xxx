@@ -9,26 +9,36 @@ from supabase import create_client, Client
 
 # ------------------ ENV ------------------ #
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-API_TOKEN = os.getenv("API_TOKEN")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 OWNER_ID = int(os.getenv("ADMIN_ID", 0))  # Bot owner
 
-if not BOT_TOKEN or not API_TOKEN or not SUPABASE_URL or not SUPABASE_KEY or not OWNER_ID:
+if not BOT_TOKEN or not SUPABASE_URL or not SUPABASE_KEY or not OWNER_ID:
     raise ValueError("All required env variables must be set!")
 
 # ------------------ SUPABASE ------------------ #
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
+def get_api_token(user_id: int) -> str:
+    """Fetch API token for a given user from admins table"""
+    result = supabase.table("admins").select("api_token").eq("user_id", user_id).limit(1).execute()
+    if result.data and "api_token" in result.data[0]:
+        return result.data[0]["api_token"]
+    raise ValueError("API token not found for this user!")
+
+def set_api_token(user_id: int, new_token: str):
+    """Update API token for a user (owner only)"""
+    supabase.table("admins").update({"api_token": new_token}).eq("user_id", user_id).execute()
+
 def is_admin(user_id: int) -> bool:
-    """Check if user is an admin (Supabase)"""
+    """Check if user is admin (Supabase)"""
     if user_id == OWNER_ID:
-        return True  # owner is automatically admin for search
+        return True  # Owner always admin
     data = supabase.table("admins").select("user_id").eq("user_id", user_id).execute()
     return bool(data.data)
 
-def add_admin(user_id: int):
-    supabase.table("admins").insert({"user_id": user_id}).execute()
+def add_admin(user_id: int, api_token: str = ""):
+    supabase.table("admins").insert({"user_id": user_id, "api_token": api_token}).execute()
 
 def remove_admin(user_id: int):
     supabase.table("admins").delete().eq("user_id", user_id).execute()
@@ -40,11 +50,12 @@ app = Flask(__name__)
 
 # ------------------ AUTO PING ------------------ #
 def auto_ping():
-    payload = {"token": API_TOKEN, "request": "ping", "limit": 1, "lang": "en"}
     delay = 60
     max_delay = 3600
     while True:
         try:
+            api_token = get_api_token(OWNER_ID)
+            payload = {"token": api_token, "request": "ping", "limit": 1, "lang": "en"}
             resp = requests.post(API_URL, json=payload, timeout=10)
             if resp.status_code == 200:
                 delay = 60
@@ -69,7 +80,7 @@ def get_message():
     bot.process_new_updates([update])
     return "OK", 200
 
-# ------------------ HANDLERS ------------------ #
+# ------------------ TELEGRAM HANDLERS ------------------ #
 @bot.message_handler(commands=['start'])
 def start(message):
     user_id = message.from_user.id
@@ -85,6 +96,17 @@ def start(message):
             parse_mode="Markdown"
         )
 
+@bot.message_handler(commands=['settoken'])
+def settoken_cmd(message):
+    if message.from_user.id != OWNER_ID:
+        return
+    try:
+        new_token = message.text.split(maxsplit=1)[1]
+        set_api_token(OWNER_ID, new_token)
+        bot.reply_to(message, "✅ API token updated successfully for owner.")
+    except IndexError:
+        bot.reply_to(message, "⚠️ Usage: /settoken NEW_API_TOKEN")
+
 @bot.message_handler(commands=['help'])
 def help_cmd(message):
     if message.from_user.id != OWNER_ID:
@@ -94,6 +116,7 @@ def help_cmd(message):
         message,
         "🛠 Owner Commands:\n"
         "/help - Show this help\n"
+        "/settoken <token> - Update API token\n"
         "/addadmin <user_id> - Add admin\n"
         "/removeadmin <user_id> - Remove admin\n"
         "Admins and owner can search numbers, emails, names"
@@ -150,7 +173,8 @@ def handle_query(message):
                 else:
                     return {"Error code": "API request failed after retries"}
 
-    payload = {"token": API_TOKEN, "request": query, "limit": 100, "lang": "en"}
+    api_token = get_api_token(user_id)
+    payload = {"token": api_token, "request": query, "limit": 100, "lang": "en"}
     resp = call_api_with_retry(payload)
 
     if isinstance(resp, dict) and "Error code" in resp:
