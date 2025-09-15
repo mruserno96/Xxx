@@ -6,7 +6,7 @@ from flask import Flask, request
 
 # GitHub Gist ID और Personal Access Token
 GIST_ID = "40289f54f8e2c1eb3ba2894ab477f5cd"
-GITHUB_TOKEN = "ghp_11BUKBPDI0OfkCQgzNiyQ6_tqLq1Ms24InZAOQ9loF3RLGMPGgXM0bw1q6e92MOifNOF3D4YOSjUqeDKTR"
+GITHUB_TOKEN = "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"
 API_URL = "https://leakosintapi.com/"
 
 # Telegram Bot Token और Admin ID
@@ -44,7 +44,7 @@ def save_token(new_token):
 @app.route("/setwebhook", methods=["GET", "POST"])
 def set_webhook():
     bot.remove_webhook()
-    url = os.getenv("WEBHOOK_URL", "https://your-app-url.com")
+    url = os.getenv("WEBHOOK_URL", "https://xxx-etbu.onrender.com")
     bot.set_webhook(url=f"{url}/{BOT_TOKEN}")
     return "Webhook set", 200
 
