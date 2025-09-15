@@ -4,36 +4,51 @@ import requests
 import telebot
 from flask import Flask, request
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")  # सिर्फ़ Telegram bot का token env से लेंगे
+# GitHub Gist ID और Personal Access Token
+GIST_ID = "40289f54f8e2c1eb3ba2894ab477f5cd"
+GITHUB_TOKEN = "ghp_11BUKBPDI0OfkCQgzNiyQ6_tqLq1Ms24InZAOQ9loF3RLGMPGgXM0bw1q6e92MOifNOF3D4YOSjUqeDKTR"
 API_URL = "https://leakosintapi.com/"
-ADMIN_ID = int(os.getenv("ADMIN_ID", "8356178010"))  # अपना Telegram user id डालें
 
-# ---- Load API_TOKEN from local.json ----
-CONFIG_FILE = "local.json"
-
-def load_token():
-    if os.path.exists(CONFIG_FILE):
-        with open(CONFIG_FILE, "r") as f:
-            data = json.load(f)
-            return data.get("API_TOKEN")
-    return None
-
-def save_token(token):
-    with open(CONFIG_FILE, "w") as f:
-        json.dump({"API_TOKEN": token}, f)
-
-API_TOKEN = load_token()  # startup पर load होगा
-
-# default limit (must be 100..10000)
-DEFAULT_LIMIT = int(os.getenv("DEFAULT_LIMIT", "100"))
-if DEFAULT_LIMIT < 100:
-    DEFAULT_LIMIT = 100
-elif DEFAULT_LIMIT > 10000:
-    DEFAULT_LIMIT = 10000
+# Telegram Bot Token और Admin ID
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+ADMIN_ID = 8356178010
 
 bot = telebot.TeleBot(BOT_TOKEN)
 app = Flask(__name__)
 
+# Gist URL
+GIST_URL = f"https://api.github.com/gists/{GIST_ID}"
+
+# Gist से API Token लोड करें
+def load_token():
+    response = requests.get(GIST_URL)
+    data = response.json()
+    content = data['files']['local.json']['content']
+    return json.loads(content)['API_TOKEN']
+
+# Gist में API Token सेव करें
+def save_token(new_token):
+    content = json.dumps({"API_TOKEN": new_token}, indent=2)
+    payload = {
+        "files": {
+            "local.json": {
+                "content": content
+            }
+        }
+    }
+    headers = {"Authorization": f"token {GITHUB_TOKEN}"}
+    response = requests.patch(GIST_URL, headers=headers, json=payload)
+    return response.status_code
+
+# Webhook सेट करें
+@app.route("/setwebhook", methods=["GET", "POST"])
+def set_webhook():
+    bot.remove_webhook()
+    url = os.getenv("WEBHOOK_URL", "https://your-app-url.com")
+    bot.set_webhook(url=f"{url}/{BOT_TOKEN}")
+    return "Webhook set", 200
+
+# Telegram से आने वाले संदेशों को हैंडल करें
 @app.route('/' + BOT_TOKEN, methods=['POST'])
 def getMessage():
     json_str = request.stream.read().decode("utf-8")
@@ -41,23 +56,16 @@ def getMessage():
     bot.process_new_updates([update])
     return "OK", 200
 
-@app.route("/")
-def webhook():
-    bot.remove_webhook()
-    url = os.getenv("WEBHOOK_URL", "https://xxx-etbu.onrender.com")
-    bot.set_webhook(url=f"{url}/{BOT_TOKEN}")
-    return "Webhook set", 200
-
+# /start कमांड हैंडलर
 @bot.message_handler(commands=['start'])
 def welcome(message):
     bot.reply_to(message, "👋 Send a phone number or email — I'll check leaked databases.")
 
-# ✅ Admin command: set new API token
+# /settoken कमांड हैंडलर (केवल Admin के लिए)
 @bot.message_handler(commands=['settoken'])
 def set_token(message):
-    global API_TOKEN
     if message.from_user.id != ADMIN_ID:
-        bot.reply_to(message, "⛔ Not authorized")
+        bot.reply_to(message, "⛔️ Not authorized")
         return
 
     try:
@@ -66,13 +74,15 @@ def set_token(message):
         bot.reply_to(message, "⚠️ Usage: /settoken NEW_API_TOKEN")
         return
 
-    API_TOKEN = new_token
-    save_token(API_TOKEN)
-    bot.reply_to(message, f"✅ API token updated & saved:\n`{API_TOKEN}`", parse_mode="Markdown")
+    status_code = save_token(new_token)
+    if status_code == 200:
+        bot.reply_to(message, "✅ API token updated and saved in Gist")
+    else:
+        bot.reply_to(message, f"❌ Failed to update token: {status_code}")
 
+# सामान्य संदेश हैंडलर
 @bot.message_handler(func=lambda m: True)
 def handle_query(message):
-    global API_TOKEN
     query = message.text.strip()
     if not query:
         bot.reply_to(message, "⚠️ Please send a phone number or email.")
@@ -82,18 +92,21 @@ def handle_query(message):
     bot.send_chat_action(message.chat.id, 'typing')
 
     def call_api(limit):
-        payload = {"token": API_TOKEN, "request": query, "limit": limit, "lang": "en"}
+        payload = {"token": load_token(), "request": query, "limit": limit, "lang": "en"}
         resp = requests.post(API_URL, json=payload)
         try:
             return resp.json()
         except Exception:
             return {"Error code": "Invalid JSON response from API"}
 
-    resp = call_api(DEFAULT_LIMIT)
+    # First try with default limit
+    resp = call_api(100)
+
+    # If API returns a limit-related error, retry with 100
     if isinstance(resp, dict) and "Error code" in resp:
         err_text = str(resp["Error code"]).lower()
         if "limit" in err_text or "100" in err_text and "10000" in err_text:
-            resp = call_api(100)
+            resp = call_api(100)  # retry with minimum acceptable value
             if isinstance(resp, dict) and "Error code" in resp:
                 bot.edit_message_text(chat_id=message.chat.id, message_id=waiting_msg.message_id,
                                       text=f"❌ API Error: {resp['Error code']}")
@@ -103,11 +116,13 @@ def handle_query(message):
                                   text=f"❌ API Error: {resp['Error code']}")
             return
 
+    # No list found
     if not resp.get("List"):
         bot.edit_message_text(chat_id=message.chat.id, message_id=waiting_msg.message_id,
                               text=f"✅ No leaks found for *{query}*")
         return
 
+    # Build reply (show first 5 records per DB)
     parts = []
     for db, details in resp.get("List", {}).items():
         parts.append(f"*📂 {db}*\n_{details.get('InfoLeak','')}_\n")
