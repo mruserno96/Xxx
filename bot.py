@@ -57,7 +57,7 @@ threading.Thread(target=auto_ping, daemon=True).start()
 @app.route("/setwebhook", methods=["GET", "POST"])
 def set_webhook():
     bot.remove_webhook()
-    url = os.getenv("WEBHOOK_URL", "https://xxx-etbu.onrender.com")
+    url = os.getenv("WEBHOOK_URL", "https://blackeye-uwgo.onrender.com/")
     bot.set_webhook(url=f"{url}/{BOT_TOKEN}")
     return "Webhook set", 200
 
