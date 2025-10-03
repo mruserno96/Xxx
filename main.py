@@ -109,8 +109,8 @@ async def unknown(update: Update, context: CallbackContext) -> None:
 async def webhook():
     try:
         json_str = request.get_data().decode('UTF-8')
-        update = Update.de_json(json_str, dispatcher.bot)
-        dispatcher.process_update(update)
+        update = Update.de_json(json_str, application.bot)
+        application.process_update(update)
         return 'ok'
     except Exception as e:
         logger.error(f"Error in webhook: {e}")
@@ -130,16 +130,15 @@ def set_webhook():
 
 # Main function to set up the bot with webhook
 def main():
-    global dispatcher
+    global application
     application = Application.builder().token(TOKEN).build()
-    dispatcher = application.dispatcher
 
-    dispatcher.add_handler(CommandHandler("start", start))
-    dispatcher.add_handler(CommandHandler("num", num))
-    dispatcher.add_handler(CallbackQueryHandler(help_button, pattern='help'))
-    dispatcher.add_handler(CallbackQueryHandler(owner_button, pattern='owner'))
-    dispatcher.add_handler(CallbackQueryHandler(back_button, pattern='back'))
-    dispatcher.add_handler(MessageHandler(filters.COMMAND, unknown))
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("num", num))
+    application.add_handler(CallbackQueryHandler(help_button, pattern='help'))
+    application.add_handler(CallbackQueryHandler(owner_button, pattern='owner'))
+    application.add_handler(CallbackQueryHandler(back_button, pattern='back'))
+    application.add_handler(MessageHandler(filters.COMMAND, unknown))
 
     # Set webhook on start
     set_webhook()
