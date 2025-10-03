@@ -1,10 +1,26 @@
 import json
 import requests
+import logging
+import os
+from flask import Flask, request
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
-from telegram.ext import Updater, CommandHandler, CallbackQueryHandler, MessageHandler, Filters, CallbackContext
+from telegram.ext import Updater, CommandHandler, CallbackQueryHandler, MessageHandler, Filters, CallbackContext, Dispatcher
+from dotenv import load_dotenv
 
-# Define the Bot's Token (replace with your own)
-TOKEN = '7536807251:AAG--YPyBTtF4fJL55mxwBRJROdlg2Fa2UM'
+# Load environment variables from .env file
+load_dotenv()
+
+# Get the BOT_TOKEN and WEBHOOK_URL from environment variables
+TOKEN = os.getenv('BOT_TOKEN')
+WEBHOOK_URL = os.getenv('WEBHOOK_URL')
+
+# Flask App for Webhook
+app = Flask(__name__)
+
+# Set up logging to get error logs
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+                    level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Function to send the start message and inline keyboard
 def start(update: Update, context: CallbackContext) -> None:
@@ -60,7 +76,6 @@ def num(update: Update, context: CallbackContext) -> None:
         
         if response.status_code == 200:
             data = response.json()
-            # You can process the JSON data here and send it back to the user
             result = json.dumps(data, indent=4)
             update.message.reply_text(f"Number Information:\n{result}")
         else:
@@ -72,8 +87,26 @@ def num(update: Update, context: CallbackContext) -> None:
 def unknown(update: Update, context: CallbackContext) -> None:
     update.message.reply_text("Sorry, I didn't understand that command.")
 
-# Main function to set up the bot
-def main() -> None:
+# Set up the webhook handler
+@app.route(f'/{TOKEN}', methods=['POST'])
+def webhook():
+    json_str = request.get_data().decode('UTF-8')
+    update = Update.de_json(json_str, dispatcher.bot)
+    dispatcher.process_update(update)
+    return 'ok'
+
+# Set up the bot with dispatcher for webhook
+def set_webhook():
+    url = f'https://api.telegram.org/bot{TOKEN}/setWebhook?url={WEBHOOK_URL}/{TOKEN}'
+    response = requests.get(url)
+    if response.status_code == 200:
+        print("Webhook set successfully!")
+    else:
+        print(f"Failed to set webhook. Status code: {response.status_code}")
+
+# Main function to set up the bot with webhook
+def main():
+    global dispatcher
     updater = Updater(TOKEN)
     dispatcher = updater.dispatcher
 
@@ -84,8 +117,11 @@ def main() -> None:
     dispatcher.add_handler(CallbackQueryHandler(back_button, pattern='back'))
     dispatcher.add_handler(MessageHandler(Filters.command, unknown))
 
-    updater.start_polling()
-    updater.idle()
+    # Set webhook on start
+    set_webhook()
+
+    # Start the Flask app (used to handle the webhook)
+    app.run(host="0.0.0.0", port=5000)
 
 if __name__ == '__main__':
     main()
