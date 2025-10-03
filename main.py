@@ -23,27 +23,27 @@ logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s
 logger = logging.getLogger(__name__)
 
 # Function to send the start message and inline keyboard
-async def start(update: Update, context: CallbackContext) -> None:
+def start(update: Update, context: CallbackContext) -> None:
     try:
         keyboard = [
             [InlineKeyboardButton("Help", callback_data='help'), 
              InlineKeyboardButton("Owner", callback_data='owner')]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        await update.message.reply_text('Hello! Welcome to BlackEye Number To Information Bot', reply_markup=reply_markup)
+        update.message.reply_text('Hello! Welcome to BlackEye Number To Information Bot', reply_markup=reply_markup)
     except Exception as e:
         logger.error(f"Error in start command: {e}")
-        await update.message.reply_text("Sorry, an error occurred while processing your request.")
+        update.message.reply_text("Sorry, an error occurred while processing your request.")
 
 # Function to show the help message when Help button is clicked
-async def help_button(update: Update, context: CallbackContext) -> None:
+def help_button(update: Update, context: CallbackContext) -> None:
     try:
         keyboard = [
             [InlineKeyboardButton("Back", callback_data='back')]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        await update.callback_query.answer()
-        await update.callback_query.message.edit_text(
+        update.callback_query.answer()
+        update.callback_query.message.edit_text(
             "Use /num <your_phone_number> to search for number information.\nFor example: /num 9239595956",
             reply_markup=reply_markup
         )
@@ -51,14 +51,14 @@ async def help_button(update: Update, context: CallbackContext) -> None:
         logger.error(f"Error in help_button callback: {e}")
 
 # Function to show the owner information when Owner button is clicked
-async def owner_button(update: Update, context: CallbackContext) -> None:
+def owner_button(update: Update, context: CallbackContext) -> None:
     try:
         keyboard = [
             [InlineKeyboardButton("Back", callback_data='back')]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        await update.callback_query.answer()
-        await update.callback_query.message.edit_text(
+        update.callback_query.answer()
+        update.callback_query.message.edit_text(
             "Owner of Bot:\n@GodAlexMM\n@WinTheBetWithMe",
             reply_markup=reply_markup
         )
@@ -66,22 +66,22 @@ async def owner_button(update: Update, context: CallbackContext) -> None:
         logger.error(f"Error in owner_button callback: {e}")
 
 # Function to handle the back button to return to the main menu
-async def back_button(update: Update, context: CallbackContext) -> None:
+def back_button(update: Update, context: CallbackContext) -> None:
     try:
         keyboard = [
             [InlineKeyboardButton("Help", callback_data='help'),
              InlineKeyboardButton("Owner", callback_data='owner')]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        await update.callback_query.answer()
-        await update.callback_query.message.edit_text(
+        update.callback_query.answer()
+        update.callback_query.message.edit_text(
             'Hello! Welcome to BlackEye Number To Information Bot', reply_markup=reply_markup
         )
     except Exception as e:
         logger.error(f"Error in back_button callback: {e}")
 
 # Function to handle /num command and fetch number information
-async def num(update: Update, context: CallbackContext) -> None:
+def num(update: Update, context: CallbackContext) -> None:
     try:
         if len(context.args) > 0:
             phone_number = context.args[0]
@@ -91,26 +91,26 @@ async def num(update: Update, context: CallbackContext) -> None:
             if response.status_code == 200:
                 data = response.json()
                 result = json.dumps(data, indent=4)
-                await update.message.reply_text(f"Number Information:\n{result}")
+                update.message.reply_text(f"Number Information:\n{result}")
             else:
-                await update.message.reply_text("Failed to fetch data. Please try again later.")
+                update.message.reply_text("Failed to fetch data. Please try again later.")
         else:
-            await update.message.reply_text("Please provide a number. Example: /num 9239595956")
+            update.message.reply_text("Please provide a number. Example: /num 9239595956")
     except Exception as e:
         logger.error(f"Error in num command: {e}")
-        await update.message.reply_text("Sorry, an error occurred while processing your request.")
+        update.message.reply_text("Sorry, an error occurred while processing your request.")
 
 # Function to handle any unknown commands
-async def unknown(update: Update, context: CallbackContext) -> None:
-    await update.message.reply_text("Sorry, I didn't understand that command.")
+def unknown(update: Update, context: CallbackContext) -> None:
+    update.message.reply_text("Sorry, I didn't understand that command.")
 
-# Set up the webhook handler (async)
+# Set up the webhook handler (synchronous)
 @app.route(f'/{TOKEN}', methods=['POST'])
-async def webhook():
+def webhook():
     try:
         json_str = request.get_data().decode('UTF-8')
         update = Update.de_json(json_str, application.bot)
-        await application.process_update(update)  # Process the update via the Application instance
+        application.process_update(update)  # Process the update via the Application instance
         return 'ok'
     except Exception as e:
         logger.error(f"Error in webhook: {e}")
@@ -145,7 +145,7 @@ def main():
     # Set webhook on start
     set_webhook()
 
-    # Start the Flask app (used to handle the webhook)
+    # Start the Flask app on port 5000 (fixed port)
     app.run(host="0.0.0.0", port=5000)
 
 if __name__ == '__main__':
