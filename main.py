@@ -110,7 +110,7 @@ async def webhook():
     try:
         json_str = request.get_data().decode('UTF-8')
         update = Update.de_json(json_str, application.bot)
-        application.process_update(update)
+        await application.process_update(update)  # Process the update via the Application instance
         return 'ok'
     except Exception as e:
         logger.error(f"Error in webhook: {e}")
@@ -133,6 +133,7 @@ def main():
     global application
     application = Application.builder().token(TOKEN).build()
 
+    # Add handlers
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("num", num))
     application.add_handler(CallbackQueryHandler(help_button, pattern='help'))
