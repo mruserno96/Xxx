@@ -6,8 +6,6 @@ from flask import Flask, request
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, CallbackContext
 from dotenv import load_dotenv
-from time import sleep
-import threading
 
 # ---------------- Config ----------------
 load_dotenv()
@@ -102,11 +100,18 @@ def unknown(update: Update, context: CallbackContext) -> None:
     update.message.reply_text("Sorry, I didn't understand that command.")
 
 # ---------------- Webhook Routes ----------------
+
+# Define the root endpoint to avoid 404 error
+@app.route("/")
+def home():
+    return "Hello, this is the home page of the Telegram bot service."
+
+# Webhook handler
 @app.route(f'/{TOKEN}', methods=['POST'])
 def webhook():
     try:
-        json_str = request.get_data().decode('UTF-8')
-        update = Update.de_json(json_str, application.bot)
+        json_str = request.get_data().decode('UTF-8')  # Read the incoming data as a string
+        update = Update.de_json(json_str, application.bot)  # Use the update object from telegram
         application.process_update(update)  # Process the update via the Application instance
         return 'OK', 200
     except Exception as e:
@@ -124,19 +129,6 @@ def set_webhook():
             print(f"Failed to set webhook. Status code: {response.status_code}")
     except Exception as e:
         logger.error(f"Error in setting webhook: {e}")
-
-# ---------------- Auto-ping and Retry Backoff ----------------
-def auto_ping():
-    while True:
-        try:
-            response = requests.get(f'{WEBHOOK_URL}/{TOKEN}')
-            if response.status_code != 200:
-                logger.error(f"Failed to ping webhook. Status code: {response.status_code}")
-            else:
-                logger.info("Webhook is alive.")
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Error pinging webhook: {e}")
-        sleep(300)  # Auto ping every 5 minutes
 
 # ---------------- Main Function ----------------
 def main():
@@ -157,9 +149,6 @@ def main():
 
     # Start the Flask app on port 5000 (fixed port)
     app.run(host="0.0.0.0", port=5000)
-
-    # Start auto ping in a separate thread
-    threading.Thread(target=auto_ping, daemon=True).start()
 
 if __name__ == '__main__':
     main()
