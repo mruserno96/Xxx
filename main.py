@@ -101,17 +101,17 @@ def unknown(update: Update, context: CallbackContext) -> None:
 
 # ---------------- Webhook Routes ----------------
 
-# Define the root endpoint to avoid 404 error
-@app.route("/")
+@app.route("/")  # Home route to avoid 404 error
 def home():
-    return "Hello, this is the home page of the Telegram bot service."
+    return "Bot is working!"
 
-# Webhook handler
 @app.route(f'/{TOKEN}', methods=['POST'])
 def webhook():
     try:
-        json_str = request.get_data().decode('UTF-8')  # Read the incoming data as a string
-        update = Update.de_json(json_str, application.bot)  # Use the update object from telegram
+        # Read the incoming data as a string
+        json_str = request.get_data().decode('UTF-8')
+        # Check if the data is a valid JSON string and parse it
+        update = Update.de_json(json_str, application.bot)
         application.process_update(update)  # Process the update via the Application instance
         return 'OK', 200
     except Exception as e:
