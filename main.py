@@ -6,23 +6,25 @@ from flask import Flask, request
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, CallbackContext
 from dotenv import load_dotenv
+from time import sleep
+import threading
 
-# Load environment variables from .env file
+# ---------------- Config ----------------
 load_dotenv()
 
-# Get the BOT_TOKEN and WEBHOOK_URL from environment variables
 TOKEN = os.getenv('BOT_TOKEN')
 WEBHOOK_URL = os.getenv('WEBHOOK_URL')
 
-# Flask App for Webhook
+# Flask app
 app = Flask(__name__)
 
-# Set up logging to get error logs
+# Logging setup
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
                     level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Function to send the start message and inline keyboard
+# ---------------- Handlers ----------------
+
 def start(update: Update, context: CallbackContext) -> None:
     try:
         keyboard = [
@@ -35,7 +37,6 @@ def start(update: Update, context: CallbackContext) -> None:
         logger.error(f"Error in start command: {e}")
         update.message.reply_text("Sorry, an error occurred while processing your request.")
 
-# Function to show the help message when Help button is clicked
 def help_button(update: Update, context: CallbackContext) -> None:
     try:
         keyboard = [
@@ -50,7 +51,6 @@ def help_button(update: Update, context: CallbackContext) -> None:
     except Exception as e:
         logger.error(f"Error in help_button callback: {e}")
 
-# Function to show the owner information when Owner button is clicked
 def owner_button(update: Update, context: CallbackContext) -> None:
     try:
         keyboard = [
@@ -65,7 +65,6 @@ def owner_button(update: Update, context: CallbackContext) -> None:
     except Exception as e:
         logger.error(f"Error in owner_button callback: {e}")
 
-# Function to handle the back button to return to the main menu
 def back_button(update: Update, context: CallbackContext) -> None:
     try:
         keyboard = [
@@ -80,7 +79,6 @@ def back_button(update: Update, context: CallbackContext) -> None:
     except Exception as e:
         logger.error(f"Error in back_button callback: {e}")
 
-# Function to handle /num command and fetch number information
 def num(update: Update, context: CallbackContext) -> None:
     try:
         if len(context.args) > 0:
@@ -100,23 +98,22 @@ def num(update: Update, context: CallbackContext) -> None:
         logger.error(f"Error in num command: {e}")
         update.message.reply_text("Sorry, an error occurred while processing your request.")
 
-# Function to handle any unknown commands
 def unknown(update: Update, context: CallbackContext) -> None:
     update.message.reply_text("Sorry, I didn't understand that command.")
 
-# Set up the webhook handler (synchronous)
+# ---------------- Webhook Routes ----------------
 @app.route(f'/{TOKEN}', methods=['POST'])
 def webhook():
     try:
         json_str = request.get_data().decode('UTF-8')
         update = Update.de_json(json_str, application.bot)
         application.process_update(update)  # Process the update via the Application instance
-        return 'ok'
+        return 'OK', 200
     except Exception as e:
         logger.error(f"Error in webhook: {e}")
-        return 'fail'
+        return 'fail', 500
 
-# Set up the bot with dispatcher for webhook
+# ---------------- Set Webhook ----------------
 def set_webhook():
     try:
         url = f'https://api.telegram.org/bot{TOKEN}/setWebhook?url={WEBHOOK_URL}/{TOKEN}'
@@ -128,7 +125,20 @@ def set_webhook():
     except Exception as e:
         logger.error(f"Error in setting webhook: {e}")
 
-# Main function to set up the bot with webhook
+# ---------------- Auto-ping and Retry Backoff ----------------
+def auto_ping():
+    while True:
+        try:
+            response = requests.get(f'{WEBHOOK_URL}/{TOKEN}')
+            if response.status_code != 200:
+                logger.error(f"Failed to ping webhook. Status code: {response.status_code}")
+            else:
+                logger.info("Webhook is alive.")
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Error pinging webhook: {e}")
+        sleep(300)  # Auto ping every 5 minutes
+
+# ---------------- Main Function ----------------
 def main():
     global application
     # Set up the Application object (bot instance)
@@ -147,6 +157,9 @@ def main():
 
     # Start the Flask app on port 5000 (fixed port)
     app.run(host="0.0.0.0", port=5000)
+
+    # Start auto ping in a separate thread
+    threading.Thread(target=auto_ping, daemon=True).start()
 
 if __name__ == '__main__':
     main()
