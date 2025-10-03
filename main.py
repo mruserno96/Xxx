@@ -104,7 +104,7 @@ async def num(update: Update, context: CallbackContext) -> None:
 async def unknown(update: Update, context: CallbackContext) -> None:
     await update.message.reply_text("Sorry, I didn't understand that command.")
 
-# Set up the webhook handler
+# Set up the webhook handler (async)
 @app.route(f'/{TOKEN}', methods=['POST'])
 async def webhook():
     try:
@@ -131,6 +131,7 @@ def set_webhook():
 # Main function to set up the bot with webhook
 def main():
     global application
+    # Set up the Application object (bot instance)
     application = Application.builder().token(TOKEN).build()
 
     # Add handlers
