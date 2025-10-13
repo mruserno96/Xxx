@@ -23,7 +23,7 @@ SELF_URL = os.getenv("WEBHOOK_URL", "").rsplit("/webhook", 1)[0] or "https://bla
 session = requests.Session()
 retries = Retry(
     total=5,
-    backoff_factor=1.5,  # exponential backoff (1.5, 3, 4.5, etc.)
+    backoff_factor=1.5,
     status_forcelist=[429, 500, 502, 503, 504],
     allowed_methods=["GET", "POST"]
 )
@@ -31,8 +31,11 @@ session.mount("https://", HTTPAdapter(max_retries=retries))
 session.mount("http://", HTTPAdapter(max_retries=retries))
 
 # ===== HELPERS =====
-def send_message(chat_id, text, reply_markup=None, parse_mode="HTML"):
-    payload = {"chat_id": chat_id, "text": text, "parse_mode": parse_mode}
+def send_message(chat_id, text, reply_markup=None, parse_mode=None):
+    """Send message safely to Telegram."""
+    payload = {"chat_id": chat_id, "text": text}
+    if parse_mode:
+        payload["parse_mode"] = parse_mode
     if reply_markup:
         payload["reply_markup"] = json.dumps(reply_markup)
     try:
@@ -84,7 +87,6 @@ def webhook():
 
     logging.info("Incoming update keys: %s", list(update.keys()))
 
-    # Handle messages
     if "message" in update:
         msg = update["message"]
         chat_id = msg["chat"]["id"]
@@ -105,7 +107,6 @@ def webhook():
             send_message(chat_id, "Use /help to see commands.")
         return jsonify(ok=True)
 
-    # Handle callbacks
     if "callback_query" in update:
         cb = update["callback_query"]
         data = cb.get("data", "")
@@ -143,24 +144,24 @@ def handle_start(chat_id, user_id):
             reply_markup=build_join_keyboard(not_joined)
         )
     else:
-        send_message(chat_id, "Hello Buddy 👋 Welcome to Own Number To Information Bot.\nClick /help to learn how to use the bot!!!")
+        send_message(chat_id, "Hello Buddy 👋 Welcome to Our Number To Information Bot.\nClick /help to learn how to use the bot!!!")
 
 def handle_help(chat_id):
-    text = (
-        "<b>Commands:</b>\n"
-        "/num &lt;10-digit-number&gt;\n\n"
-        "<b>Example:</b> /num 9235895648\n\n"
-        "<b>Rules:</b>\n"
-        "• Only 10-digit numbers accepted.\n"
-        "• 11-digit or invalid formats rejected.\n"
-        "• Data fetched from: https://yahu.site/api/?number=&lt;num&gt;&key=The_ajay\n"
+    help_text = (
+        "📘 *How To Use This Bot*\n\n"
+        "➡️ `/num <10-digit-number>` — Example: `/num 9235895648`\n\n"
+        "📌 Rules:\n"
+        "• Only 10-digit Indian numbers accepted (without +91).\n"
+        "• If you enter 11 digits or letters, it will be rejected.\n"
+        "• Reply will contain information about the given number.\n"
     )
-    send_message(chat_id, text)
+    send_message(chat_id, help_text, parse_mode="Markdown")
 
 def handle_num(chat_id, number):
     if not number.isdigit() or len(number) != 10:
         send_message(chat_id, "❌ Only 10-digit numbers allowed. Example: /num 9235895648")
         return
+
     api_url = f"https://yahu.site/api/?number={number}&key=The_ajay"
     try:
         r = session.get(api_url, timeout=15)
@@ -169,7 +170,8 @@ def handle_num(chat_id, number):
         pretty = json.dumps(data, indent=2)
         if len(pretty) > 3500:
             pretty = pretty[:3500] + "\n\n[truncated]"
-        send_message(chat_id, f"<pre>{pretty}</pre>")
+        # Send the data neatly as text, not code block to avoid confusion
+        send_message(chat_id, pretty)
     except Exception as e:
         logging.exception("API fetch failed: %s", e)
         send_message(chat_id, "⚠️ Failed to fetch data. Try again later.")
@@ -192,7 +194,7 @@ def auto_ping():
             logging.info("Auto-pinged %s", ping_url)
         except Exception as e:
             logging.warning("Auto-ping failed: %s", e)
-        time.sleep(300)  # every 5 minutes
+        time.sleep(300)
 
 threading.Thread(target=auto_ping, daemon=True).start()
 
