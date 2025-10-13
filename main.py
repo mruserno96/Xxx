@@ -87,25 +87,32 @@ def webhook():
 
     logging.info("Incoming update keys: %s", list(update.keys()))
 
-    if "message" in update:
-        msg = update["message"]
-        chat_id = msg["chat"]["id"]
-        user_id = msg["from"]["id"]
-        text = msg.get("text", "")
+  if "message" in update:
+    msg = update["message"]
+    chat_id = msg["chat"]["id"]
+    user_id = msg["from"]["id"]
+    text = msg.get("text", "")
 
-        if text.startswith("/start"):
-            handle_start(chat_id, user_id)
-        elif text.startswith("/help"):
-            handle_help(chat_id)
-        elif text.startswith("/num"):
-            parts = text.split()
-            if len(parts) < 2:
-                send_message(chat_id, "Usage: /num <10-digit-number>\nExample: /num 9235895648")
-            else:
-                handle_num(chat_id, parts[1])
-        else:
-            send_message(chat_id, "Use /help to see commands.")
+    # 🚫 Ignore all messages that are not from private chat
+    chat_type = msg["chat"].get("type", "")
+    if chat_type != "private":
+        logging.info(f"Ignored message from non-private chat: {chat_type}")
         return jsonify(ok=True)
+
+    if text.startswith("/start"):
+        handle_start(chat_id, user_id)
+    elif text.startswith("/help"):
+        handle_help(chat_id)
+    elif text.startswith("/num"):
+        parts = text.split()
+        if len(parts) < 2:
+            send_message(chat_id, "Usage: /num <10-digit-number>\nExample: /num 9235895648")
+        else:
+            handle_num(chat_id, parts[1])
+    else:
+        send_message(chat_id, "Use /help to see commands.")
+    return jsonify(ok=True)
+
 
     if "callback_query" in update:
         cb = update["callback_query"]
