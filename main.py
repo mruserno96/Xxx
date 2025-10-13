@@ -133,9 +133,9 @@ def handle_start(chat_id, user_id):
 
     not_joined = []
     if mem1 is not True:
-        not_joined.append({"label": "Join Channel 1", "url": ch1_url})
+        not_joined.append({"label": "Join Group", "url": ch1_url})
     if mem2 is not True:
-        not_joined.append({"label": "Join Channel 2", "url": ch2_url})
+        not_joined.append({"label": "Join Channel", "url": ch2_url})
 
     if not_joined:
         send_message(
