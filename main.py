@@ -167,14 +167,20 @@ def handle_num(chat_id, number):
         r = session.get(api_url, timeout=15)
         r.raise_for_status()
         data = r.json()
-        pretty = json.dumps(data, indent=2)
-        if len(pretty) > 3500:
-            pretty = pretty[:3500] + "\n\n[truncated]"
-        # Send the data neatly as text, not code block to avoid confusion
-        send_message(chat_id, pretty)
+
+        # Convert to formatted JSON string
+        pretty_json = json.dumps(data, indent=2, ensure_ascii=False)
+
+        # Telegram supports <pre>...</pre> for monospaced blocks
+        if len(pretty_json) > 3900:
+            pretty_json = pretty_json[:3900] + "\n\n[truncated due to size limit]"
+
+        send_message(chat_id, f"<pre>{pretty_json}</pre>", parse_mode="HTML")
+
     except Exception as e:
         logging.exception("API fetch failed: %s", e)
         send_message(chat_id, "⚠️ Failed to fetch data. Try again later.")
+
 
 # ===== WEBHOOK SETUP =====
 @app.route("/set_webhook", methods=["GET"])
