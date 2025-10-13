@@ -125,6 +125,15 @@ def webhook():
 
 # ===== COMMAND HANDLERS =====
 def handle_start(chat_id, user_id):
+    # Access user's first name via Telegram getChat API (fallback safe)
+    try:
+        # Fetch full user data from Telegram (optional, you can skip this if you already get first_name in message)
+        r = session.get(f"{TELEGRAM_API}/getChat", params={"chat_id": chat_id}, timeout=10)
+        user_data = r.json().get("result", {})
+        first_name = user_data.get("first_name", "Buddy")
+    except Exception:
+        first_name = "Buddy"
+
     ch1_url = CHANNEL1_INVITE_LINK
     ch2_url = f"https://t.me/{CHANNEL2_CHAT.lstrip('@')}" if CHANNEL2_CHAT else None
 
@@ -144,7 +153,13 @@ def handle_start(chat_id, user_id):
             reply_markup=build_join_keyboard(not_joined)
         )
     else:
-        send_message(chat_id, "Hello Buddy \nClick 👋 Welcome to Our Number To Information Bot.\nClick /help to learn how to use the bot!!!")
+        # Personalized welcome message using f-string
+        welcome = (
+            f"Hello {first_name} 👋\n"
+            "Welcome to Our Number Info Bot!\n"
+            "Click /help to learn how to use me!"
+        )
+        send_message(chat_id, welcome)
 
 def handle_help(chat_id):
     help_text = (
@@ -163,24 +178,56 @@ def handle_num(chat_id, number):
         send_message(chat_id, "❌ Only 10-digit numbers allowed. Example: /num 9235895648")
         return
 
+    # Step 1: Send one message first (we'll keep editing this)
+    msg = session.post(f"{TELEGRAM_API}/sendMessage", data={
+        "chat_id": chat_id,
+        "text": "🔍 Searching number info... 0%"
+    }).json()
+
+    message_id = msg.get("result", {}).get("message_id")
+
+    # Step 2: Simulate loading bar by editing the same message
+    for p in [15, 37, 63, 84, 100]:
+        try:
+            time.sleep(0.5)
+            session.post(f"{TELEGRAM_API}/editMessageText", data={
+                "chat_id": chat_id,
+                "message_id": message_id,
+                "text": f"🔍 Searching number info... {p}%"
+            })
+        except Exception as e:
+            logging.warning("edit progress failed: %s", e)
+
+    # Step 3: Fetch actual data from API
     api_url = f"https://yahu.site/api/?number={number}&key=The_ajay"
     try:
         r = session.get(api_url, timeout=15)
         r.raise_for_status()
         data = r.json()
 
-        # Convert to formatted JSON string
         pretty_json = json.dumps(data, indent=2, ensure_ascii=False)
-
-        # Telegram supports <pre>...</pre> for monospaced blocks
         if len(pretty_json) > 3900:
             pretty_json = pretty_json[:3900] + "\n\n[truncated due to size limit]"
 
+        # Step 4: Edit same message → show “Search Complete”
+        session.post(f"{TELEGRAM_API}/editMessageText", data={
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "text": "✅ Search Complete! Here's your result ↓"
+        })
+
+        # Step 5: Send the formatted JSON result
         send_message(chat_id, f"<pre>{pretty_json}</pre>", parse_mode="HTML")
 
     except Exception as e:
         logging.exception("API fetch failed: %s", e)
-        send_message(chat_id, "⚠️ Failed to fetch data. Try again later.")
+        # Edit message to show failure
+        session.post(f"{TELEGRAM_API}/editMessageText", data={
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "text": "⚠️ Failed to fetch data. Try again later."
+        })
+
 
 
 # ===== WEBHOOK SETUP =====
