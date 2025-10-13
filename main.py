@@ -178,16 +178,15 @@ def handle_num(chat_id, number):
         send_message(chat_id, "❌ Only 10-digit numbers allowed. Example: /num 9235895648")
         return
 
-    # Step 1: Send one message first (we'll keep editing this)
+    # Step 1: send initial message
     msg = session.post(f"{TELEGRAM_API}/sendMessage", data={
         "chat_id": chat_id,
         "text": "🔍 Searching number info... 0%"
     }).json()
-
     message_id = msg.get("result", {}).get("message_id")
 
-    # Step 2: Simulate loading bar by editing the same message
-    for p in [15, 37, 63, 84, 100]:
+    # Step 2: update same message with progress
+    for p in [15, 42, 68, 90, 100]:
         try:
             time.sleep(0.5)
             session.post(f"{TELEGRAM_API}/editMessageText", data={
@@ -198,30 +197,40 @@ def handle_num(chat_id, number):
         except Exception as e:
             logging.warning("edit progress failed: %s", e)
 
-    # Step 3: Fetch actual data from API
+    # Step 3: Call API
     api_url = f"https://yahu.site/api/?number={number}&key=The_ajay"
     try:
         r = session.get(api_url, timeout=15)
         r.raise_for_status()
         data = r.json()
 
+        # Step 4: Check if "data" exists but empty
+        if "data" in data and isinstance(data["data"], list) and len(data["data"]) == 0:
+            # edit progress message to say "complete"
+            session.post(f"{TELEGRAM_API}/editMessageText", data={
+                "chat_id": chat_id,
+                "message_id": message_id,
+                "text": "✅ Search Complete! Here's your result ↓"
+            })
+            # send "not available" message
+            send_message(chat_id, "⚠️ Number Data Not Available !!!")
+            return
+
+        # Step 5: show result normally
         pretty_json = json.dumps(data, indent=2, ensure_ascii=False)
         if len(pretty_json) > 3900:
             pretty_json = pretty_json[:3900] + "\n\n[truncated due to size limit]"
 
-        # Step 4: Edit same message → show “Search Complete”
         session.post(f"{TELEGRAM_API}/editMessageText", data={
             "chat_id": chat_id,
             "message_id": message_id,
             "text": "✅ Search Complete! Here's your result ↓"
         })
 
-        # Step 5: Send the formatted JSON result
         send_message(chat_id, f"<pre>{pretty_json}</pre>", parse_mode="HTML")
 
     except Exception as e:
         logging.exception("API fetch failed: %s", e)
-        # Edit message to show failure
         session.post(f"{TELEGRAM_API}/editMessageText", data={
             "chat_id": chat_id,
             "message_id": message_id,
