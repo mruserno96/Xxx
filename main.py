@@ -144,12 +144,13 @@ def handle_start(chat_id, user_id):
             reply_markup=build_join_keyboard(not_joined)
         )
     else:
-        send_message(chat_id, "Hello Buddy 👋 Welcome to Our Number To Information Bot.\nClick /help to learn how to use the bot!!!")
+        send_message(chat_id, "Hello Buddy \nClick 👋 Welcome to Our Number To Information Bot.\nClick /help to learn how to use the bot!!!")
 
 def handle_help(chat_id):
     help_text = (
         "📘 *How To Use This Bot*\n\n"
-        "➡️ `/num <10-digit-number>` — Example: `/num 9235895648`\n\n"
+        "➡️ `/num <10-digit-number>`\n"
+        "Example: `/num 9235895648`\n\n"
         "📌 Rules:\n"
         "• Only 10-digit Indian numbers accepted (without +91).\n"
         "• If you enter 11 digits or letters, it will be rejected.\n"
