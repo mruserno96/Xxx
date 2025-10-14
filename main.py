@@ -662,24 +662,42 @@ def handle_num(chat_id: int, number: str, user_id: Optional[int] = None):
                      reply_markup=keyboard_for(user_id or 0))
         return
 
-    # progress message
-    msg = send_message(chat_id, "🔍 Searching number info... 0%", reply_markup=keyboard_for(user_id or 0))
-    message_id = (msg or {}).get("result", {}).get("message_id")
+    # Step 1: send initial message and fetch message_id safely
+    init_resp = tg("sendMessage", {
+        "chat_id": chat_id,
+        "text": "🔍 Searching number info... 0%",
+        "reply_markup": json.dumps(keyboard_for(user_id or 0))
+    })
+    message_id = None
+    try:
+        message_id = init_resp.get("result", {}).get("message_id")
+    except Exception:
+        message_id = None
 
-    for p in [15, 42, 68, 90, 100]:
-        try:
-            time.sleep(0.5)
-            if message_id:
-                edit_message(chat_id, message_id, f"🔍 Searching number info... {p}%")
-        except Exception as e:
-            logging.warning("edit progress failed: %s", e)
+    # Step 2: update same message with progress bar
+    if message_id:
+        for p in [15, 42, 68, 90, 100]:
+            try:
+                time.sleep(0.5)
+                tg("editMessageText", {
+                    "chat_id": chat_id,
+                    "message_id": message_id,
+                    "text": f"🔍 Searching number info... {p}%"
+                })
+            except Exception as e:
+                logging.warning("edit progress failed: %s", e)
+    else:
+        # fallback (if message_id missing)
+        send_message(chat_id, "🔍 Searching number info... Please wait...")
 
+    # Step 3: call external API
     api_url = f"https://yahu.site/api/?number={number}&key=The_ajay"
     try:
         r = session.get(api_url, timeout=20)
         r.raise_for_status()
         data = r.json()
 
+        # Step 4: Handle empty data
         if "data" in data and isinstance(data["data"], list) and len(data["data"]) == 0:
             if message_id:
                 edit_message(chat_id, message_id, "✅ Search Complete! Here's your result ↓")
@@ -690,6 +708,7 @@ def handle_num(chat_id: int, number: str, user_id: Optional[int] = None):
             send_message(chat_id, bilingual_msg, parse_mode="Markdown", reply_markup=keyboard_for(user_id or 0))
             return
 
+        # Step 5: Show formatted result
         pretty_json = json.dumps(data, indent=2, ensure_ascii=False)
         if len(pretty_json) > 3900:
             pretty_json = pretty_json[:3900] + "\n\n[truncated due to size limit]"
@@ -702,6 +721,7 @@ def handle_num(chat_id: int, number: str, user_id: Optional[int] = None):
         logging.exception("API fetch failed: %s", e)
         if message_id:
             edit_message(chat_id, message_id, "⚠️ Failed to fetch data. Try again later.")
+
 
 # ---------------------------------------------------------------------
 # Broadcast
