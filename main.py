@@ -761,7 +761,7 @@ def handle_num(chat_id: int, number: str, user_id: Optional[int] = None) -> None
     # Step 1: Send initial message safely
     init_resp = send_message(
         chat_id,
-        "🔍 Searching number info... 0%",
+        "🔍 Searching number info... Please Wait",
         reply_markup=keyboard_for(user_id or 0),
     )
 
