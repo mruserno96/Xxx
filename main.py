@@ -6,37 +6,44 @@ NumberInfo Telegram Bot (Flask) — Production Ready
 
 Highlights
 ----------
-- Reply keyboards (bottom) for **owner**, **admin**, and **user** — NO inline admin controls.
-- Membership gate: checks user is a member of your group/channel(s); shows inline URL buttons only for join links.
-- Broadcast: supports **text**, **photo+caption**, **video+caption**, **document+caption**. Uses original file_id to forward.
-- Supabase persistence: users, admin roles, simple sessions (for pending actions), broadcast logs.
+- Reply keyboards (bottom) for owner/admin/user — no inline admin controls (only URL joins).
+- Membership gate: checks user is a member of your group/channel(s); shows join links with inline URL buttons.
+- Broadcast: supports text, photo+caption, video+caption, document+caption (uses original file_id to forward).
+- Supabase persistence: users, admin roles, sessions (pending actions), broadcast logs.
 - Live stats: total users and today's active users.
-- Robust HTTP session with retries, webhook route, keepalive ping thread.
+- Robust HTTP session with retries; webhook route; optional keepalive ping thread.
 - Safe for redeploy/restart — data stored in Supabase.
-- Clean structure; verbose logging; helpful comments.
+- Clean structure; structured logging; helpful comments.
+- Render/Gunicorn friendly: no double-run, optional ping thread, health endpoints.
 
 Environment Variables
 ---------------------
 TELEGRAM_TOKEN=...
-WEBHOOK_URL=https://your-domain.com/webhook/<secret>  (you set <secret> as WEBHOOK_SECRET below)
-WEBHOOK_SECRET=some-secret
-CHANNEL1_INVITE_LINK=https://t.me/+abcdef (Join Group URL)
-CHANNEL1_CHAT_ID=-1001234567890         (Group/Channel numeric id for gate check)
-CHANNEL2_CHAT_ID_OR_USERNAME=@yourchan  (Second channel username or id for gate check)
+WEBHOOK_URL=https://your-domain.com/webhook/<secret>
+WEBHOOK_SECRET=<secret>
+CHANNEL1_INVITE_LINK=https://t.me/+abcdef
+CHANNEL1_CHAT_ID=-1001234567890
+CHANNEL2_CHAT_ID_OR_USERNAME=@yourchan
 
 SUPABASE_URL=...
-SUPABASE_SERVICE_ROLE=... (recommended)  OR  SUPABASE_ANON_KEY=... (limited)
-OWNER_ID=123456789 (Your Telegram user id — gets owner privileges automatically)
+SUPABASE_SERVICE_ROLE=...  (recommended)  OR  SUPABASE_ANON_KEY=... (limited)
+OWNER_ID=123456789
+
+# Optional:
+LOG_LEVEL=INFO              # DEBUG|INFO|WARNING|ERROR
+DISABLE_PING=1              # set to 1 to disable keepalive ping thread
+PING_INTERVAL_SECONDS=300   # default 300
+REQUEST_TIMEOUT_SECONDS=20  # default 20
 
 Notes
 -----
 - Reply keyboards are persistent for private chats only.
 - Join gate uses an inline keyboard because reply keyboards cannot include URL buttons.
 - Sessions are intentionally simple: if a deploy occurs while you are in a "waiting for input"
-  state (e.g., broadcast), you may need to re-initiate the action. All persistent user/admin
-  data remains intact.
-
+  state (e.g., broadcast), you may need to re-initiate the action. Persistent data remains intact.
 """
+
+from __future__ import annotations
 
 import os
 import json
@@ -51,53 +58,73 @@ import requests
 from requests.adapters import HTTPAdapter, Retry
 
 # ----- Supabase -----
-from supabase import create_client, Client
+try:
+    from supabase import create_client, Client  # type: ignore
+except Exception:  # pragma: no cover
+    create_client = None
+    Client = object  # type: ignore
 
 # ---------------------------------------------------------------------
-# Flask & Logging
+# Logging (configurable via LOG_LEVEL)
+# ---------------------------------------------------------------------
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+logging.basicConfig(
+    level=getattr(logging, LOG_LEVEL, logging.INFO),
+    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+)
+log = logging.getLogger("numberinfo-bot")
+
+# ---------------------------------------------------------------------
+# Flask
 # ---------------------------------------------------------------------
 app = Flask(__name__)
-logging.basicConfig(level=logging.INFO)
 
 # ---------------------------------------------------------------------
-# Config
+# Config (env)
 # ---------------------------------------------------------------------
-TOKEN = os.getenv("TELEGRAM_TOKEN", "")
-WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "default-secret")
+TOKEN = os.getenv("TELEGRAM_TOKEN", "").strip()
+if not TOKEN:
+    log.warning("TELEGRAM_TOKEN is empty! Telegram calls will fail.")
+
+WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "default-secret").strip()
 TELEGRAM_API = f"https://api.telegram.org/bot{TOKEN}"
-SELF_URL = os.getenv("WEBHOOK_URL", "").rsplit("/webhook", 1)[0] or "https://example.com"
 
-# Channels / Groups gate (set any of them you need)
-CHANNEL1_INVITE_LINK = os.getenv("CHANNEL1_INVITE_LINK", "")
-CHANNEL1_CHAT_ID = os.getenv("CHANNEL1_CHAT_ID", "")
-CHANNEL2_CHAT = os.getenv("CHANNEL2_CHAT_ID_OR_USERNAME", "")
+WEBHOOK_URL = os.getenv("WEBHOOK_URL", "").strip()
+SELF_URL = WEBHOOK_URL.rsplit("/webhook", 1)[0] if "/webhook" in WEBHOOK_URL else (os.getenv("SELF_URL", "").strip() or "https://example.com")
+
+# Channels / Groups gate (set the ones you need)
+CHANNEL1_INVITE_LINK = os.getenv("CHANNEL1_INVITE_LINK", "").strip()
+CHANNEL1_CHAT_ID = os.getenv("CHANNEL1_CHAT_ID", "").strip()
+CHANNEL2_CHAT = os.getenv("CHANNEL2_CHAT_ID_OR_USERNAME", "").strip()
 
 # Admin owner (bootstrap): this user_id is always treated as owner/admin
-OWNER_ID = os.getenv("OWNER_ID", "")  # e.g. "8356178010"
+OWNER_ID = os.getenv("OWNER_ID", "").strip()
 
 # Supabase
-SUPABASE_URL = os.getenv("SUPABASE_URL", "")
-SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE", os.getenv("SUPABASE_ANON_KEY", ""))  # prefer service role
+SUPABASE_URL = os.getenv("SUPABASE_URL", "").strip()
+SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE", os.getenv("SUPABASE_ANON_KEY", "")).strip()
 
 supabase: Optional[Client] = None
-if SUPABASE_URL and SUPABASE_KEY:
+if SUPABASE_URL and SUPABASE_KEY and create_client:
     try:
-        supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
-        logging.info("✅ Supabase client initialized")
+        supabase = create_client(SUPABASE_URL, SUPABASE_KEY)  # type: ignore
+        log.info("✅ Supabase client initialized")
     except Exception as e:
-        logging.exception("❌ Supabase init failed: %s", e)
+        log.exception("❌ Supabase init failed: %s", e)
 else:
-    logging.warning("⚠️ Supabase not configured — set SUPABASE_URL and SUPABASE_SERVICE_ROLE/ANON. Persistence disabled.")
+    log.warning("⚠️ Supabase not configured — set SUPABASE_URL and SUPABASE_SERVICE_ROLE/ANON. Persistence disabled.")
 
-# ---------------------------------------------------------------------
-# Robust HTTP session (Telegram API) with retries
-# ---------------------------------------------------------------------
+# Requests / Telegram session with retries
+REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT_SECONDS", "20"))
 session = requests.Session()
 retries = Retry(
     total=5,
+    connect=5,
+    read=5,
     backoff_factor=1.5,
     status_forcelist=[429, 500, 502, 503, 504],
-    allowed_methods=["GET", "POST"]
+    allowed_methods=["GET", "POST"],
+    respect_retry_after_header=True,
 )
 session.mount("https://", HTTPAdapter(max_retries=retries))
 session.mount("http://", HTTPAdapter(max_retries=retries))
@@ -114,8 +141,9 @@ def keyboard_user() -> Dict[str, Any]:
         "resize_keyboard": True,
         "is_persistent": True,
         "one_time_keyboard": False,
-        "selective": True
+        "selective": True,
     }
+
 
 def keyboard_admin() -> Dict[str, Any]:
     """Keyboard for admins (limited)."""
@@ -127,8 +155,9 @@ def keyboard_admin() -> Dict[str, Any]:
         "resize_keyboard": True,
         "is_persistent": True,
         "one_time_keyboard": False,
-        "selective": True
+        "selective": True,
     }
+
 
 def keyboard_owner() -> Dict[str, Any]:
     """Keyboard for owner (full control)."""
@@ -141,11 +170,13 @@ def keyboard_owner() -> Dict[str, Any]:
         "resize_keyboard": True,
         "is_persistent": True,
         "one_time_keyboard": False,
-        "selective": True
+        "selective": True,
     }
+
 
 def keyboard_none() -> Dict[str, Any]:
     return {"remove_keyboard": True}
+
 
 def membership_join_inline(channels: List[Dict[str, str]]) -> Dict[str, Any]:
     """Inline keyboard for join links (reply keyboards can't have URLs)."""
@@ -155,6 +186,23 @@ def membership_join_inline(channels: List[Dict[str, str]]) -> Dict[str, Any]:
     buttons.append([{"text": "✅ Try Again", "callback_data": "try_again"}])
     return {"inline_keyboard": buttons}
 
+
+def db_is_admin(user_id: int) -> bool:
+    """Owner is always admin (bootstrap)."""
+    if OWNER_ID and str(user_id) == str(OWNER_ID):
+        return True
+    if not supabase:
+        return False
+    try:
+        res = supabase.table("users").select("is_admin").eq("id", user_id).limit(1).execute()  # type: ignore
+        if getattr(res, "data", None) and len(res.data) > 0:  # type: ignore
+            return bool(res.data[0].get("is_admin", False))  # type: ignore
+        return False
+    except Exception as e:
+        log.exception("db_is_admin failed: %s", e)
+        return False
+
+
 def role_for(user_id: int) -> str:
     """Return 'owner' | 'admin' | 'user'."""
     if OWNER_ID and str(user_id) == str(OWNER_ID):
@@ -162,6 +210,7 @@ def role_for(user_id: int) -> str:
     if db_is_admin(user_id):
         return "admin"
     return "user"
+
 
 def keyboard_for(user_id: int) -> Dict[str, Any]:
     r = role_for(user_id)
@@ -172,65 +221,82 @@ def keyboard_for(user_id: int) -> Dict[str, Any]:
     return keyboard_user()
 
 # ---------------------------------------------------------------------
-# Telegram helpers
+# Telegram helpers (FIXED)
 # ---------------------------------------------------------------------
-def tg(method: str, data: Dict[str, Any], timeout: int = 20) -> Optional[Dict[str, Any]]:
-    """Low-level Telegram call with logging."""
+def tg(method: str, data: Dict[str, Any], timeout: int = REQUEST_TIMEOUT) -> Dict[str, Any]:
+    """
+    Low-level Telegram call with logging.
+
+    # FIX: Always return a dict. On error, return {"ok": False, "error": "..."} so callers can branch safely.
+    """
     try:
         resp = session.post(f"{TELEGRAM_API}/{method}", data=data, timeout=timeout)
-        logging.info("%s: %s %s", method, resp.status_code, resp.text[:500])
-        return resp.json()
+        text = (resp.text or "")[:800]
+        log.debug("TG %s -> %s %s", method, resp.status_code, text)
+        if resp.status_code == 200:
+            try:
+                return resp.json()  # type: ignore
+            except Exception:
+                return {"ok": False, "error": "invalid json from telegram"}
+        return {"ok": False, "error": text or f"status {resp.status_code}"}
     except Exception as e:
-        logging.exception("%s failed: %s", method, e)
-        return None
+        log.exception("TG %s failed: %s", method, e)
+        return {"ok": False, "error": str(e)}
+
 
 def send_message(chat_id: int, text: str, reply_markup: Optional[Dict[str, Any]] = None,
-                 parse_mode: Optional[str] = None) -> Optional[Dict[str, Any]]:
-    payload = {"chat_id": chat_id, "text": text}
+                 parse_mode: Optional[str] = None) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {"chat_id": chat_id, "text": text}
     if parse_mode:
         payload["parse_mode"] = parse_mode
     if reply_markup:
         payload["reply_markup"] = json.dumps(reply_markup)
     return tg("sendMessage", payload)
 
+
 def edit_message(chat_id: int, message_id: int, text: str,
-                 reply_markup: Optional[Dict[str, Any]] = None, parse_mode: Optional[str] = None) -> Optional[Dict[str, Any]]:
-    payload = {"chat_id": chat_id, "message_id": message_id, "text": text}
+                 reply_markup: Optional[Dict[str, Any]] = None, parse_mode: Optional[str] = None) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {"chat_id": chat_id, "message_id": message_id, "text": text}
     if parse_mode:
         payload["parse_mode"] = parse_mode
     if reply_markup:
         payload["reply_markup"] = json.dumps(reply_markup)
     return tg("editMessageText", payload)
 
-def send_photo(chat_id: int, file_id: str, caption: str = "", reply_markup: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
-    payload = {"chat_id": chat_id, "photo": file_id}
+
+def send_photo(chat_id: int, file_id: str, caption: str = "", reply_markup: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {"chat_id": chat_id, "photo": file_id}
     if caption:
         payload["caption"] = caption
     if reply_markup:
         payload["reply_markup"] = json.dumps(reply_markup)
     return tg("sendPhoto", payload)
 
-def send_video(chat_id: int, file_id: str, caption: str = "", reply_markup: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
-    payload = {"chat_id": chat_id, "video": file_id}
+
+def send_video(chat_id: int, file_id: str, caption: str = "", reply_markup: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {"chat_id": chat_id, "video": file_id}
     if caption:
         payload["caption"] = caption
     if reply_markup:
         payload["reply_markup"] = json.dumps(reply_markup)
     return tg("sendVideo", payload)
 
-def send_document(chat_id: int, file_id: str, caption: str = "", reply_markup: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
-    payload = {"chat_id": chat_id, "document": file_id}
+
+def send_document(chat_id: int, file_id: str, caption: str = "", reply_markup: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {"chat_id": chat_id, "document": file_id}
     if caption:
         payload["caption"] = caption
     if reply_markup:
         payload["reply_markup"] = json.dumps(reply_markup)
     return tg("sendDocument", payload)
 
-def answer_callback(callback_id: str, text: Optional[str] = None, show_alert: bool = False):
-    payload = {"callback_query_id": callback_id, "show_alert": show_alert}
+
+def answer_callback(callback_id: str, text: Optional[str] = None, show_alert: bool = False) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {"callback_query_id": callback_id, "show_alert": show_alert}
     if text:
         payload["text"] = text
-    tg("answerCallbackQuery", payload, timeout=10)
+    return tg("answerCallbackQuery", payload, timeout=10)
+
 
 def is_member(user_id: int, chat_identifier: str) -> Optional[bool]:
     """Return True if user is member/admin/creator; False if not; None if error."""
@@ -242,18 +308,18 @@ def is_member(user_id: int, chat_identifier: str) -> Optional[bool]:
                         timeout=10)
         data = r.json()
         if not data.get("ok"):
-            logging.warning("getChatMember failed: %s", data)
+            log.warning("getChatMember failed: %s", data)
             return None
         status = data["result"]["status"]
         return status in ("creator", "administrator", "member")
     except Exception as e:
-        logging.exception("is_member error: %s", e)
+        log.exception("is_member error: %s", e)
         return None
 
 # ---------------------------------------------------------------------
 # Supabase persistence helpers
 # ---------------------------------------------------------------------
-def db_upsert_user(user: Dict[str, Any]):
+def db_upsert_user(user: Dict[str, Any]) -> None:
     """Upsert user in 'users' table; user is dict with Telegram fields."""
     if not supabase:
         return
@@ -266,56 +332,45 @@ def db_upsert_user(user: Dict[str, Any]):
             "language_code": user.get("language_code"),
             "last_seen": datetime.now(timezone.utc).isoformat(),
         }
-        supabase.table("users").upsert(row).execute()
+        supabase.table("users").upsert(row).execute()  # type: ignore
     except Exception as e:
-        logging.exception("db_upsert_user failed: %s", e)
+        log.exception("db_upsert_user failed: %s", e)
+
 
 def db_mark_admin(user_id: int, is_admin: bool) -> bool:
     if not supabase:
         return False
     try:
-        supabase.table("users").upsert({"id": user_id, "is_admin": is_admin}).execute()
+        supabase.table("users").upsert({"id": user_id, "is_admin": is_admin}).execute()  # type: ignore
         return True
     except Exception as e:
-        logging.exception("db_mark_admin failed: %s", e)
+        log.exception("db_mark_admin failed: %s", e)
         return False
 
-def db_is_admin(user_id: int) -> bool:
-    """Owner is always admin (bootstrap)."""
-    if OWNER_ID and str(user_id) == str(OWNER_ID):
-        return True
-    if not supabase:
-        return False
-    try:
-        res = supabase.table("users").select("is_admin").eq("id", user_id).limit(1).execute()
-        if res.data and len(res.data) > 0:
-            return bool(res.data[0].get("is_admin", False))
-        return False
-    except Exception as e:
-        logging.exception("db_is_admin failed: %s", e)
-        return False
 
 def db_list_admins() -> List[Dict[str, Any]]:
     if not supabase:
         return []
     try:
-        res = supabase.table("users").select("id,username,first_name,last_name,is_admin").eq("is_admin", True).execute()
-        return res.data or []
+        res = supabase.table("users").select("id,username,first_name,last_name,is_admin").eq("is_admin", True).execute()  # type: ignore
+        return res.data or []  # type: ignore
     except Exception as e:
-        logging.exception("db_list_admins failed: %s", e)
+        log.exception("db_list_admins failed: %s", e)
         return []
+
 
 def db_all_user_ids() -> List[int]:
     if not supabase:
         return []
     try:
-        res = supabase.table("users").select("id").execute()
-        return [row["id"] for row in (res.data or [])]
+        res = supabase.table("users").select("id").execute()  # type: ignore
+        return [row["id"] for row in (res.data or [])]  # type: ignore
     except Exception as e:
-        logging.exception("db_all_user_ids failed: %s", e)
+        log.exception("db_all_user_ids failed: %s", e)
         return []
 
-def db_set_session(user_id: int, action: Optional[str] = None, payload: Optional[Dict[str, Any]] = None):
+
+def db_set_session(user_id: int, action: Optional[str] = None, payload: Optional[Dict[str, Any]] = None) -> None:
     """Store pending action for admin (e.g., broadcast, add_admin, remove_admin)."""
     if not supabase:
         return
@@ -324,17 +379,18 @@ def db_set_session(user_id: int, action: Optional[str] = None, payload: Optional
             "user_id": user_id,
             "action": action,
             "payload": json.dumps(payload or {})
-        }).execute()
+        }).execute()  # type: ignore
     except Exception as e:
-        logging.exception("db_set_session failed: %s", e)
+        log.exception("db_set_session failed: %s", e)
+
 
 def db_get_session(user_id: int) -> Optional[Dict[str, Any]]:
     if not supabase:
         return None
     try:
-        res = supabase.table("sessions").select("*").eq("user_id", user_id).limit(1).execute()
-        if res.data:
-            row = res.data[0]
+        res = supabase.table("sessions").select("*").eq("user_id", user_id).limit(1).execute()  # type: ignore
+        if res.data:  # type: ignore
+            row = res.data[0]  # type: ignore
             payload = {}
             try:
                 payload = json.loads(row.get("payload") or "{}")
@@ -343,18 +399,20 @@ def db_get_session(user_id: int) -> Optional[Dict[str, Any]]:
             return {"action": row.get("action"), "payload": payload}
         return None
     except Exception as e:
-        logging.exception("db_get_session failed: %s", e)
+        log.exception("db_get_session failed: %s", e)
         return None
 
-def db_clear_session(user_id: int):
+
+def db_clear_session(user_id: int) -> None:
     if not supabase:
         return
     try:
-        supabase.table("sessions").delete().eq("user_id", user_id).execute()
+        supabase.table("sessions").delete().eq("user_id", user_id).execute()  # type: ignore
     except Exception as e:
-        logging.exception("db_clear_session failed: %s", e)
+        log.exception("db_clear_session failed: %s", e)
 
-def db_log_broadcast(desc: str, total: int, success: int, failed: int):
+
+def db_log_broadcast(desc: str, total: int, success: int, failed: int) -> None:
     if not supabase:
         return
     try:
@@ -363,17 +421,18 @@ def db_log_broadcast(desc: str, total: int, success: int, failed: int):
             "total": total,
             "success": success,
             "failed": failed
-        }).execute()
+        }).execute()  # type: ignore
     except Exception as e:
-        logging.exception("db_log_broadcast failed: %s", e)
+        log.exception("db_log_broadcast failed: %s", e)
+
 
 def db_stats_counts() -> Tuple[int, int]:
     """Return total users and today's active users (by last_seen date)."""
     if not supabase:
         return 0, 0
     try:
-        res = supabase.table("users").select("id,last_seen").execute()
-        rows = res.data or []
+        res = supabase.table("users").select("id,last_seen").execute()  # type: ignore
+        rows = res.data or []  # type: ignore
         total = len(rows)
         today_str = date.today().isoformat()
         active_today = 0
@@ -383,7 +442,7 @@ def db_stats_counts() -> Tuple[int, int]:
                 active_today += 1
         return total, active_today
     except Exception as e:
-        logging.exception("db_stats_counts failed: %s", e)
+        log.exception("db_stats_counts failed: %s", e)
         return 0, 0
 
 # ---------------------------------------------------------------------
@@ -391,7 +450,7 @@ def db_stats_counts() -> Tuple[int, int]:
 # ---------------------------------------------------------------------
 def check_membership_and_prompt(chat_id: int, user_id: int) -> bool:
     """Checks membership; if not, shows inline URLs to join and a Try Again button."""
-    ch1_url = CHANNEL1_INVITE_LINK
+    ch1_url = CHANNEL1_INVITE_LINK or None
     ch2_url = f"https://t.me/{CHANNEL2_CHAT.lstrip('@')}" if CHANNEL2_CHAT else None
 
     mem1 = is_member(user_id, CHANNEL1_CHAT_ID) if CHANNEL1_CHAT_ID else True
@@ -417,19 +476,34 @@ def check_membership_and_prompt(chat_id: int, user_id: int) -> bool:
 # ---------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------
-from flask import Flask, request, jsonify
+@app.route("/", methods=["GET"])
+def home() -> Any:
+    return jsonify(ok=True, message="Bot is alive", ts=datetime.now(timezone.utc).isoformat())
 
-@app.route("/", methods=["GET", "POST"])
-def home():
-    return jsonify(ok=True, message="Bot is alive")
+
+@app.route("/health", methods=["GET"])
+def health() -> Any:
+    return jsonify(status="ok", time=datetime.now(timezone.utc).isoformat())
+
+
+@app.route("/version", methods=["GET"])
+def version() -> Any:
+    return jsonify(
+        name="numberinfo-bot",
+        version="1.0.0",
+        webhook_url=WEBHOOK_URL,
+        webhook_secret=WEBHOOK_SECRET[:4] + "***" if WEBHOOK_SECRET else "",
+        supabase=bool(supabase),
+    )
+
 
 @app.route(f"/webhook/{WEBHOOK_SECRET}", methods=["POST"])
-def webhook():
+def webhook() -> Any:
     update = request.get_json(force=True, silent=True)
     if not update:
         return jsonify(ok=False, error="no update")
 
-    logging.info("Incoming update keys: %s", list(update.keys()))
+    log.info("Incoming update keys: %s", list(update.keys()))
 
     # Track user whenever possible
     if "message" in update:
@@ -437,14 +511,20 @@ def webhook():
         if ufrom:
             db_upsert_user(ufrom)
             if OWNER_ID and str(ufrom.get("id")) == str(OWNER_ID):
-                db_mark_admin(int(OWNER_ID), True)
+                try:
+                    db_mark_admin(int(OWNER_ID), True)
+                except Exception:
+                    pass
 
     if "callback_query" in update:
         ufrom = update["callback_query"].get("from", {})
         if ufrom:
             db_upsert_user(ufrom)
             if OWNER_ID and str(ufrom.get("id")) == str(OWNER_ID):
-                db_mark_admin(int(OWNER_ID), True)
+                try:
+                    db_mark_admin(int(OWNER_ID), True)
+                except Exception:
+                    pass
 
     # ----- Handle user messages -----
     if "message" in update:
@@ -453,29 +533,26 @@ def webhook():
         chat_id = chat.get("id")
         user = msg.get("from", {})
         user_id = user.get("id")
-        text = msg.get("text", "")
+        text = msg.get("text", "") or ""
         chat_type = chat.get("type")
 
         # ignore groups/channels
         if chat_type != "private":
-            logging.info(f"Ignored non-private chat: {chat_type}")
+            log.info("Ignored non-private chat: %s", chat_type)
             return jsonify(ok=True)
 
         # Map bottom keyboard button presses to commands
-        if text == "🏠 Home":
-            text = "/start"
-        elif text == "ℹ️ Help":
-            text = "/help"
-        elif text == "📊 Live Stats":
-            text = "/stats"
-        elif text == "📢 Broadcast":
-            text = "/broadcast"
-        elif text == "👑 List Admins":
-            text = "/list_admins"
-        elif text == "➕ Add Admin":
-            text = "/add_admin"
-        elif text == "➖ Remove Admin":
-            text = "/remove_admin"
+        mapping = {
+            "🏠 Home": "/start",
+            "ℹ️ Help": "/help",
+            "📊 Live Stats": "/stats",
+            "📢 Broadcast": "/broadcast",
+            "👑 List Admins": "/list_admins",
+            "➕ Add Admin": "/add_admin",
+            "➖ Remove Admin": "/remove_admin",
+        }
+        if text in mapping:
+            text = mapping[text]
 
         # check if admin session is waiting for input
         sess = db_get_session(user_id)
@@ -489,7 +566,10 @@ def webhook():
                 if text.strip().isdigit():
                     uid = int(text.strip())
                     ok = db_mark_admin(uid, True)
-                    send_message(chat_id, f"✅ Promoted {uid} to admin.", reply_markup=keyboard_for(user_id)) if ok                         else send_message(chat_id, "❌ Failed to promote.", reply_markup=keyboard_for(user_id))
+                    if ok:
+                        send_message(chat_id, f"✅ Promoted {uid} to admin.", reply_markup=keyboard_for(user_id))
+                    else:
+                        send_message(chat_id, "❌ Failed to promote.", reply_markup=keyboard_for(user_id))
                 else:
                     send_message(chat_id, "❌ Send a numeric Telegram user ID.", reply_markup=keyboard_for(user_id))
                 db_clear_session(user_id)
@@ -498,7 +578,10 @@ def webhook():
                 if text.strip().isdigit():
                     uid = int(text.strip())
                     ok = db_mark_admin(uid, False)
-                    send_message(chat_id, f"✅ Removed admin {uid}.", reply_markup=keyboard_for(user_id)) if ok                         else send_message(chat_id, "❌ Failed to remove.", reply_markup=keyboard_for(user_id))
+                    if ok:
+                        send_message(chat_id, f"✅ Removed admin {uid}.", reply_markup=keyboard_for(user_id))
+                    else:
+                        send_message(chat_id, "❌ Failed to remove.", reply_markup=keyboard_for(user_id))
                 else:
                     send_message(chat_id, "❌ Send a numeric Telegram user ID.", reply_markup=keyboard_for(user_id))
                 db_clear_session(user_id)
@@ -530,9 +613,11 @@ def webhook():
         elif text.startswith("/num"):
             parts = text.split()
             if len(parts) < 2:
-                send_message(chat_id,
-                             "Usage: /num <10-digit-number>\nExample: /num 9235895648",
-                             reply_markup=keyboard_for(user_id))
+                send_message(
+                    chat_id,
+                    "Usage: /num <10-digit-number>\nExample: /num 9235895648",
+                    reply_markup=keyboard_for(user_id),
+                )
             else:
                 handle_num(chat_id, parts[1], user_id)
         else:
@@ -554,7 +639,6 @@ def webhook():
             handle_start(chat_id, user_id)
         else:
             answer_callback(callback_id, text="OK")
-
         return jsonify(ok=True)
 
     return jsonify(ok=True)
@@ -562,15 +646,17 @@ def webhook():
 # ---------------------------------------------------------------------
 # Command Handlers
 # ---------------------------------------------------------------------
-def handle_start(chat_id: int, user_id: int):
+def handle_start(chat_id: int, user_id: int) -> None:
     if not check_membership_and_prompt(chat_id, user_id):
         return
+    first_name = "Buddy"
     try:
         r = session.get(f"{TELEGRAM_API}/getChat", params={"chat_id": chat_id}, timeout=10)
-        user_data = r.json().get("result", {})
-        first_name = user_data.get("first_name", "Buddy")
+        if r.status_code == 200:
+            user_data = r.json().get("result", {})
+            first_name = user_data.get("first_name", first_name)
     except Exception:
-        first_name = "Buddy"
+        pass
 
     welcome = (
         f"👋 Hello {first_name}!\n"
@@ -580,7 +666,8 @@ def handle_start(chat_id: int, user_id: int):
     )
     send_message(chat_id, welcome, parse_mode="Markdown", reply_markup=keyboard_for(user_id))
 
-def handle_help(chat_id: int, user_id: Optional[int] = None):
+
+def handle_help(chat_id: int, user_id: Optional[int] = None) -> None:
     if user_id and not check_membership_and_prompt(chat_id, user_id):
         return
     help_text = (
@@ -597,7 +684,8 @@ def handle_help(chat_id: int, user_id: Optional[int] = None):
     )
     send_message(chat_id, help_text, parse_mode="Markdown", reply_markup=keyboard_for(user_id or 0))
 
-def handle_stats(chat_id: int, user_id: int):
+
+def handle_stats(chat_id: int, user_id: int) -> None:
     if role_for(user_id) not in ("owner", "admin"):
         send_message(chat_id, "❌ Not authorized.", reply_markup=keyboard_for(user_id))
         return
@@ -609,7 +697,8 @@ def handle_stats(chat_id: int, user_id: int):
     )
     send_message(chat_id, txt, parse_mode="Markdown", reply_markup=keyboard_for(user_id))
 
-def handle_list_admins(chat_id: int, user_id: int):
+
+def handle_list_admins(chat_id: int, user_id: int) -> None:
     if role_for(user_id) != "owner":
         send_message(chat_id, "❌ Only owner can list admins.", reply_markup=keyboard_for(user_id))
         return
@@ -626,21 +715,24 @@ def handle_list_admins(chat_id: int, user_id: int):
             lines.append(f"• {nm} — `{a['id']}`")
         send_message(chat_id, "👑 *Admins:*\n" + "\n".join(lines), parse_mode="Markdown", reply_markup=keyboard_for(user_id))
 
-def handle_add_admin(chat_id: int, user_id: int):
+
+def handle_add_admin(chat_id: int, user_id: int) -> None:
     if role_for(user_id) != "owner":
         send_message(chat_id, "❌ Only owner can add admins.", reply_markup=keyboard_for(user_id))
         return
     db_set_session(user_id, "add_admin_wait_id")
     send_message(chat_id, "👑 Send the Telegram *user_id* to promote as admin:", parse_mode="Markdown", reply_markup=keyboard_for(user_id))
 
-def handle_remove_admin(chat_id: int, user_id: int):
+
+def handle_remove_admin(chat_id: int, user_id: int) -> None:
     if role_for(user_id) != "owner":
         send_message(chat_id, "❌ Only owner can remove admins.", reply_markup=keyboard_for(user_id))
         return
     db_set_session(user_id, "remove_admin_wait_id")
     send_message(chat_id, "🗑️ Send the Telegram *user_id* to remove from admin:", parse_mode="Markdown", reply_markup=keyboard_for(user_id))
 
-def handle_broadcast(chat_id: int, user_id: int):
+
+def handle_broadcast(chat_id: int, user_id: int) -> None:
     if role_for(user_id) not in ("owner", "admin"):
         send_message(chat_id, "❌ Only owner/admin can broadcast.", reply_markup=keyboard_for(user_id))
         return
@@ -653,43 +745,45 @@ def handle_broadcast(chat_id: int, user_id: int):
         reply_markup=keyboard_for(user_id)
     )
 
-def handle_num(chat_id: int, number: str, user_id: Optional[int] = None):
+
+def handle_num(chat_id: int, number: str, user_id: Optional[int] = None) -> None:
     if user_id and not check_membership_and_prompt(chat_id, user_id):
         return
 
     if not number.isdigit() or len(number) != 10:
-        send_message(chat_id, "❌ Only 10-digit numbers allowed. Example: /num 9235895648",
-                     reply_markup=keyboard_for(user_id or 0))
+        send_message(
+            chat_id,
+            "❌ Only 10-digit numbers allowed. Example: /num 9235895648",
+            reply_markup=keyboard_for(user_id or 0),
+        )
         return
 
- # Step 1: Send initial message safely
-    init_resp = tg("sendMessage", {
-        "chat_id": chat_id,
-        "text": "🔍 Searching number info... 0%",
-        "reply_markup": json.dumps(keyboard_for(user_id or 0))
-    })
+    # Step 1: Send initial message safely
+    init_resp = send_message(
+        chat_id,
+        "🔍 Searching number info... 0%",
+        reply_markup=keyboard_for(user_id or 0),
+    )
 
-    message_id = None
-    try:
-        message_id = init_resp.get("result", {}).get("message_id")
-    except Exception:
-        message_id = None
+    # FIX: safer extraction of message_id
+    message_id = init_resp.get("result", {}).get("message_id") if init_resp and init_resp.get("ok") else None
 
-    # Step 2: Update progress (safe timing)
+    # Step 2: Update progress (with safe timing)
     if message_id:
-        # small delay before first edit to avoid Telegram edit bug
-        time.sleep(0.8)
+        # FIX: small delay before first edit to avoid Telegram edit race
+        time.sleep(1.0)
         for p in [15, 42, 68, 90, 100]:
             try:
-                # delay between edits (smooth animation)
-                time.sleep(0.8)
-                tg("editMessageText", {
-                    "chat_id": chat_id,
-                    "message_id": message_id,
-                    "text": f"🔍 Searching number info... {p}%"
-                })
+                time.sleep(0.8)  # smooth animation
+                log.info("Editing progress message to %d%% (msg_id=%s)", p, message_id)
+                resp = edit_message(
+                    chat_id, message_id,
+                    f"🔍 Searching number info... {p}%"
+                )
+                if not resp.get("ok"):
+                    log.warning("editMessage failed at %d%%: %s", p, resp.get("error"))
             except Exception as e:
-                logging.warning(f"edit progress failed at {p}%: {e}")
+                log.warning("edit progress failed at %d%%: %s", p, e)
     else:
         # fallback if no message_id
         send_message(chat_id, "🔍 Searching number info... Please wait...")
@@ -697,7 +791,7 @@ def handle_num(chat_id: int, number: str, user_id: Optional[int] = None):
     # Step 3: Fetch data from API
     api_url = f"https://yahu.site/api/?number={number}&key=The_ajay"
     try:
-        r = session.get(api_url, timeout=20)
+        r = session.get(api_url, timeout=REQUEST_TIMEOUT)
         r.raise_for_status()
         data = r.json()
 
@@ -712,25 +806,26 @@ def handle_num(chat_id: int, number: str, user_id: Optional[int] = None):
             send_message(chat_id, bilingual_msg, parse_mode="Markdown", reply_markup=keyboard_for(user_id or 0))
             return
 
-        # Step 5: Show formatted result
+        # Step 5: Show formatted result (truncate if needed)
         pretty_json = json.dumps(data, indent=2, ensure_ascii=False)
-        if len(pretty_json) > 3900:
-            pretty_json = pretty_json[:3900] + "\n\n[truncated due to size limit]"
+        if len(pretty_json) > 3800:
+            pretty_json = pretty_json[:3800] + "\n\n[truncated due to size limit]"
 
         if message_id:
             edit_message(chat_id, message_id, "✅ Search Complete! Here's your result ↓")
         send_message(chat_id, f"<pre>{pretty_json}</pre>", parse_mode="HTML", reply_markup=keyboard_for(user_id or 0))
 
     except Exception as e:
-        logging.exception("API fetch failed: %s", e)
+        log.exception("API fetch failed: %s", e)
         if message_id:
             edit_message(chat_id, message_id, "⚠️ Failed to fetch data. Try again later.")
-
+        else:
+            send_message(chat_id, "⚠️ Failed to fetch data. Try again later.")
 
 # ---------------------------------------------------------------------
 # Broadcast
 # ---------------------------------------------------------------------
-def run_broadcast(admin_user_id: int, chat_id: int, message_obj: Dict[str, Any]):
+def run_broadcast(admin_user_id: int, chat_id: int, message_obj: Dict[str, Any]) -> None:
     if role_for(admin_user_id) not in ("owner", "admin"):
         send_message(chat_id, "❌ Not authorized.", reply_markup=keyboard_for(admin_user_id))
         return
@@ -749,7 +844,7 @@ def run_broadcast(admin_user_id: int, chat_id: int, message_obj: Dict[str, Any])
 
     for uid in user_ids:
         try:
-            res = None
+            res: Dict[str, Any]
             if photo:
                 file_id = photo[-1]["file_id"]
                 res = send_photo(uid, file_id, caption=caption)
@@ -762,48 +857,75 @@ def run_broadcast(admin_user_id: int, chat_id: int, message_obj: Dict[str, Any])
             elif text:
                 res = send_message(uid, text)
             else:
-                res = {"ok": False}
+                res = {"ok": False, "error": "no content"}
 
-            if res and res.get("ok"):
+            if res.get("ok"):
                 success += 1
             else:
                 failed += 1
         except Exception as e:
-            logging.warning("broadcast send failed to %s: %s", uid, e)
+            log.warning("broadcast send failed to %s: %s", uid, e)
             failed += 1
-        time.sleep(0.03)
+        time.sleep(0.03)  # avoid hitting flood limits
 
     kind = "photo" if photo else "video" if video else "document" if document else "text"
     db_log_broadcast(f"{kind} broadcast", total, success, failed)
-    send_message(chat_id, f"✅ Broadcast complete!\nTotal: {total}\nDelivered: {success}\nFailed: {failed}",
-                 reply_markup=keyboard_for(admin_user_id))
+    send_message(
+        chat_id,
+        f"✅ Broadcast complete!\nTotal: {total}\nDelivered: {success}\nFailed: {failed}",
+        reply_markup=keyboard_for(admin_user_id),
+    )
 
 # ---------------------------------------------------------------------
 # Webhook setup & Keepalive
 # ---------------------------------------------------------------------
 @app.route("/set_webhook", methods=["GET"])
-def set_webhook():
-    url = os.getenv("WEBHOOK_URL")
+def set_webhook() -> Any:
+    url = WEBHOOK_URL
     if not url:
         return jsonify(ok=False, error="WEBHOOK_URL not set"), 400
     r = session.get(f"{TELEGRAM_API}/setWebhook", params={"url": url}, timeout=10)
-    return jsonify(r.json())
+    try:
+        return jsonify(r.json())
+    except Exception:
+        return jsonify(ok=False, status=r.status_code, text=r.text), r.status_code
 
-def auto_ping():
+
+def auto_ping() -> None:
+    """
+    Periodically ping SELF_URL to keep the Render dyno warm.
+    Logs only at DEBUG to avoid spam.
+
+    Disable by setting DISABLE_PING=1 in env.
+    """
+    interval = int(os.getenv("PING_INTERVAL_SECONDS", "300"))
+    ping_url = (SELF_URL.rstrip("/") + "/") if SELF_URL else None
+    if not ping_url:
+        log.warning("auto_ping disabled: SELF_URL empty")
+        return
+
     while True:
         try:
-            ping_url = SELF_URL + "/"
             session.get(ping_url, timeout=5)
-            logging.info("Auto-pinged %s", ping_url)
+            log.debug("Auto-pinged %s", ping_url)
         except Exception as e:
-            logging.warning("Auto-ping failed: %s", e)
-        time.sleep(300)
+            log.warning("Auto-ping failed: %s", e)
+        time.sleep(interval)
 
-threading.Thread(target=auto_ping, daemon=True).start()
+# Start keepalive thread only if enabled (and avoid double start under gunicorn preload)
+if os.getenv("DISABLE_PING", "").strip() not in ("1", "true", "True"):
+    try:
+        threading.Thread(target=auto_ping, daemon=True).start()
+        log.info("Keepalive ping thread started.")
+    except Exception as e:
+        log.warning("Failed to start keepalive thread: %s", e)
+else:
+    log.info("Keepalive ping thread disabled by env.")
 
 # ---------------------------------------------------------------------
-# Main
+# Main (for local dev). On Render/Gunicorn use: gunicorn app:app
 # ---------------------------------------------------------------------
 if __name__ == "__main__":
-    port = int(os.getenv("PORT", 5000))
+    port = int(os.getenv("PORT", "5000"))
+    # For local dev only; in production use gunicorn
     app.run(host="0.0.0.0", port=port)
