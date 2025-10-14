@@ -22,7 +22,7 @@ CHANNEL1_CHAT_ID = os.getenv("CHANNEL1_CHAT_ID", "")
 CHANNEL2_CHAT = os.getenv("CHANNEL2_CHAT_ID_OR_USERNAME", "")
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "default-secret")
 TELEGRAM_API = f"https://api.telegram.org/bot{TOKEN}"
-SELF_URL = os.getenv("WEBHOOK_URL", "").rsplit("/webhook", 1)[0] or "https://blackeye-89da.onrender.com"
+SELF_URL = os.getenv("WEBHOOK_URL", "").rsplit("/webhook", 1)[0] or "https://example.com"
 
 # Admin owner (bootstrap): this user_id will automatically be admin on first run
 OWNER_ID = os.getenv("OWNER_ID", "")  # e.g. "8356178010"
@@ -47,6 +47,21 @@ retries = Retry(
 )
 session.mount("https://", HTTPAdapter(max_retries=retries))
 session.mount("http://", HTTPAdapter(max_retries=retries))
+
+# ===== REPLY KEYBOARD (BOTTOM KEYBOARD) =====
+def get_reply_keyboard():
+    """Permanent bottom keyboard for private chats."""
+    return {
+        "keyboard": [
+            [{"text": "🏠 Home"}, {"text": "ℹ️ Help"}],
+            [{"text": "👑 Admin Panel"}]
+        ],
+        "resize_keyboard": True,
+        "is_persistent": True
+    }
+
+def remove_reply_keyboard():
+    return {"remove_keyboard": True}
 
 # ===== HELPERS: Telegram =====
 def send_message(chat_id, text, reply_markup=None, parse_mode=None):
@@ -208,12 +223,12 @@ def db_clear_session(user_id):
     except Exception as e:
         logging.exception("db_clear_session failed: %s", e)
 
-def db_log_broadcast(text, total, success, failed):
+def db_log_broadcast(desc, total, success, failed):
     if not supabase:
         return
     try:
         supabase.table("broadcasts").insert({
-            "text": text,
+            "text": desc,
             "total": total,
             "success": success,
             "failed": failed
@@ -299,11 +314,20 @@ def webhook():
         user = msg.get("from", {})
         user_id = user.get("id")
         text = msg.get("text", "")
+        chat_type = chat.get("type")
 
         # ignore groups/channels
-        if chat.get("type") != "private":
-            logging.info(f"Ignored non-private chat: {chat.get('type')}")
+        if chat_type != "private":
+            logging.info(f"Ignored non-private chat: {chat_type}")
             return jsonify(ok=True)
+
+        # Map bottom keyboard button presses to commands
+        if text == "🏠 Home":
+            text = "/start"
+        elif text == "ℹ️ Help":
+            text = "/help"
+        elif text == "👑 Admin Panel":
+            text = "/admin"
 
         # check if admin session is waiting for input
         sess = db_get_session(user_id)
@@ -311,24 +335,27 @@ def webhook():
             action = sess.get("action")
             if action == "broadcast_wait_text":
                 db_clear_session(user_id)
-                run_broadcast(user_id, chat_id, text)
+                # Pass the FULL message so media can be broadcast too
+                run_broadcast(user_id, chat_id, msg)
                 return jsonify(ok=True)
             elif action == "add_admin_wait_id":
                 if text.strip().isdigit():
                     uid = int(text.strip())
                     ok = db_mark_admin(uid, True)
-                    send_message(chat_id, f"✅ Promoted {uid} to admin." if ok else "❌ Failed to promote.")
+                    send_message(chat_id, f"✅ Promoted {uid} to admin.", reply_markup=get_reply_keyboard()) if ok \
+                        else send_message(chat_id, "❌ Failed to promote.", reply_markup=get_reply_keyboard())
                 else:
-                    send_message(chat_id, "❌ Send a numeric Telegram user ID.")
+                    send_message(chat_id, "❌ Send a numeric Telegram user ID.", reply_markup=get_reply_keyboard())
                 db_clear_session(user_id)
                 return jsonify(ok=True)
             elif action == "remove_admin_wait_id":
                 if text.strip().isdigit():
                     uid = int(text.strip())
                     ok = db_mark_admin(uid, False)
-                    send_message(chat_id, f"✅ Removed admin {uid}." if ok else "❌ Failed to remove.")
+                    send_message(chat_id, f"✅ Removed admin {uid}.", reply_markup=get_reply_keyboard()) if ok \
+                        else send_message(chat_id, "❌ Failed to remove.", reply_markup=get_reply_keyboard())
                 else:
-                    send_message(chat_id, "❌ Send a numeric Telegram user ID.")
+                    send_message(chat_id, "❌ Send a numeric Telegram user ID.", reply_markup=get_reply_keyboard())
                 db_clear_session(user_id)
                 return jsonify(ok=True)
 
@@ -342,13 +369,15 @@ def webhook():
         elif text.startswith("/num"):
             parts = text.split()
             if len(parts) < 2:
-                send_message(chat_id, "Usage: /num <10-digit-number>\nExample: /num 9235895648")
+                send_message(chat_id,
+                             "Usage: /num <10-digit-number>\nExample: /num 9235895648",
+                             reply_markup=get_reply_keyboard())
             else:
                 handle_num(chat_id, parts[1], user_id)
         else:
             if not check_membership_and_prompt(chat_id, user_id):
                 return jsonify(ok=True)
-            send_message(chat_id, "Use /help to see commands.")
+            send_message(chat_id, "Use /help to see commands.", reply_markup=get_reply_keyboard())
         return jsonify(ok=True)
 
     # ===== Handle callbacks =====
@@ -375,7 +404,7 @@ def webhook():
                     f"• Active Today: *{today}*\n"
                 )
                 answer_callback(callback_id, "Stats updated")
-                send_message(chat_id, txt, parse_mode="Markdown")
+                send_message(chat_id, txt, parse_mode="Markdown", reply_markup=get_reply_keyboard())
 
         elif data == "admin_broadcast":
             if not db_is_admin(user_id):
@@ -383,7 +412,13 @@ def webhook():
             else:
                 db_set_session(user_id, "broadcast_wait_text")
                 answer_callback(callback_id, "Send the message to broadcast")
-                send_message(chat_id, "📣 Send the message you want to broadcast to all users.")
+                send_message(
+                    chat_id,
+                    "📣 Send the message you want to broadcast to all users.\n"
+                    "• Text: just send text\n"
+                    "• Photo/Video/Document: send the media (with optional caption)\n",
+                    reply_markup=get_reply_keyboard()
+                )
 
         elif data == "admin_list_admins":
             if not db_is_admin(user_id):
@@ -391,7 +426,7 @@ def webhook():
             else:
                 admins = db_list_admins()
                 if not admins:
-                    send_message(chat_id, "No admins yet.")
+                    send_message(chat_id, "No admins yet.", reply_markup=get_reply_keyboard())
                 else:
                     lines = []
                     for a in admins:
@@ -400,7 +435,8 @@ def webhook():
                         if un:
                             nm = f"{nm} (@{un})"
                         lines.append(f"• {nm} — `{a['id']}`")
-                    send_message(chat_id, "👑 *Admins:*\n" + "\n".join(lines), parse_mode="Markdown")
+                    send_message(chat_id, "👑 *Admins:*\n" + "\n".join(lines),
+                                 parse_mode="Markdown", reply_markup=get_reply_keyboard())
 
         elif data == "admin_add":
             if not db_is_admin(user_id):
@@ -408,7 +444,8 @@ def webhook():
             else:
                 db_set_session(user_id, "add_admin_wait_id")
                 answer_callback(callback_id, "Send user ID to promote")
-                send_message(chat_id, "👑 Send the Telegram *user_id* to promote as admin:", parse_mode="Markdown")
+                send_message(chat_id, "👑 Send the Telegram *user_id* to promote as admin:",
+                             parse_mode="Markdown", reply_markup=get_reply_keyboard())
 
         elif data == "admin_remove":
             if not db_is_admin(user_id):
@@ -416,7 +453,8 @@ def webhook():
             else:
                 db_set_session(user_id, "remove_admin_wait_id")
                 answer_callback(callback_id, "Send user ID to remove")
-                send_message(chat_id, "🗑️ Send the Telegram *user_id* to remove from admin:", parse_mode="Markdown")
+                send_message(chat_id, "🗑️ Send the Telegram *user_id* to remove from admin:",
+                             parse_mode="Markdown", reply_markup=get_reply_keyboard())
 
         elif data == "admin_refresh":
             if not db_is_admin(user_id):
@@ -449,7 +487,7 @@ def handle_start(chat_id, user_id):
         "📘 Type /help to learn how to use this bot.\n"
         "📘 बोट का उपयोग करने के लिए /help लिखें।"
     )
-    send_message(chat_id, welcome, parse_mode="Markdown")
+    send_message(chat_id, welcome, parse_mode="Markdown", reply_markup=get_reply_keyboard())
 
 def handle_help(chat_id, user_id=None):
     if user_id and not check_membership_and_prompt(chat_id, user_id):
@@ -466,18 +504,19 @@ def handle_help(chat_id, user_id=None):
         "• Reply will contain information about the given number.\n"
         "• जवाब में दिए गए नंबर की जानकारी शामिल होगी।\n"
     )
-    send_message(chat_id, help_text, parse_mode="Markdown")
+    send_message(chat_id, help_text, parse_mode="Markdown", reply_markup=get_reply_keyboard())
 
 def handle_num(chat_id, number, user_id=None):
     if user_id and not check_membership_and_prompt(chat_id, user_id):
         return
 
     if not number.isdigit() or len(number) != 10:
-        send_message(chat_id, "❌ Only 10-digit numbers allowed. Example: /num 9235895648")
+        send_message(chat_id, "❌ Only 10-digit numbers allowed. Example: /num 9235895648",
+                     reply_markup=get_reply_keyboard())
         return
 
     # progress message
-    msg = send_message(chat_id, "🔍 Searching number info... 0%")
+    msg = send_message(chat_id, "🔍 Searching number info... 0%", reply_markup=get_reply_keyboard())
     message_id = (msg or {}).get("result", {}).get("message_id")
 
     for p in [15, 42, 68, 90, 100]:
@@ -501,7 +540,7 @@ def handle_num(chat_id, number, user_id=None):
                 "⚠️ *Number Data Not Available !!!*\n"
                 "⚠️ *नंबर का डेटा उपलब्ध नहीं है !!!*"
             )
-            send_message(chat_id, bilingual_msg, parse_mode="Markdown")
+            send_message(chat_id, bilingual_msg, parse_mode="Markdown", reply_markup=get_reply_keyboard())
             return
 
         pretty_json = json.dumps(data, indent=2, ensure_ascii=False)
@@ -510,7 +549,7 @@ def handle_num(chat_id, number, user_id=None):
 
         if message_id:
             edit_message(chat_id, message_id, "✅ Search Complete! Here's your result ↓")
-        send_message(chat_id, f"<pre>{pretty_json}</pre>", parse_mode="HTML")
+        send_message(chat_id, f"<pre>{pretty_json}</pre>", parse_mode="HTML", reply_markup=get_reply_keyboard())
 
     except Exception as e:
         logging.exception("API fetch failed: %s", e)
@@ -536,7 +575,7 @@ def admin_keyboard():
 
 def handle_admin_panel(chat_id, user_id):
     if not db_is_admin(user_id):
-        send_message(chat_id, "❌ You are not authorized to use admin panel.")
+        send_message(chat_id, "❌ You are not authorized to use admin panel.", reply_markup=get_reply_keyboard())
         return
     total, today = db_stats_counts()
     text = (
@@ -547,47 +586,49 @@ def handle_admin_panel(chat_id, user_id):
     )
     send_message(chat_id, text, reply_markup=admin_keyboard(), parse_mode="Markdown")
 
-def run_broadcast(admin_user_id, chat_id, message):
+def run_broadcast(admin_user_id, chat_id, message_obj):
     if not db_is_admin(admin_user_id):
-        send_message(chat_id, "❌ Not authorized.")
+        send_message(chat_id, "❌ Not authorized.", reply_markup=get_reply_keyboard())
         return
 
     user_ids = db_all_user_ids()
     total = len(user_ids)
     success = 0
     failed = 0
-    send_message(chat_id, f"📣 Broadcast started to {total} users...")
+    send_message(chat_id, f"📣 Broadcast started to {total} users...", reply_markup=get_reply_keyboard())
+
+    # message_obj is the full Telegram message (to support media)
+    text = message_obj.get("text")
+    photo = message_obj.get("photo")
+    video = message_obj.get("video")
+    document = message_obj.get("document")
+    caption = message_obj.get("caption", "")
 
     for uid in user_ids:
         try:
-            if isinstance(message, dict):
-                # Detect type automatically
-                if "photo" in message:
-                    file_id = message["photo"][-1]["file_id"]
-                    caption = message.get("caption", "")
-                    session.post(f"{TELEGRAM_API}/sendPhoto", data={"chat_id": uid, "photo": file_id, "caption": caption})
-                elif "video" in message:
-                    file_id = message["video"]["file_id"]
-                    caption = message.get("caption", "")
-                    session.post(f"{TELEGRAM_API}/sendVideo", data={"chat_id": uid, "video": file_id, "caption": caption})
-                elif "document" in message:
-                    file_id = message["document"]["file_id"]
-                    caption = message.get("caption", "")
-                    session.post(f"{TELEGRAM_API}/sendDocument", data={"chat_id": uid, "document": file_id, "caption": caption})
-                else:
-                    session.post(f"{TELEGRAM_API}/sendMessage", data={"chat_id": uid, "text": message.get("text", "")})
+            if photo:
+                file_id = photo[-1]["file_id"]
+                session.post(f"{TELEGRAM_API}/sendPhoto", data={"chat_id": uid, "photo": file_id, "caption": caption})
+            elif video:
+                file_id = video["file_id"]
+                session.post(f"{TELEGRAM_API}/sendVideo", data={"chat_id": uid, "video": file_id, "caption": caption})
+            elif document:
+                file_id = document["file_id"]
+                session.post(f"{TELEGRAM_API}/sendDocument", data={"chat_id": uid, "document": file_id, "caption": caption})
+            elif text:
+                session.post(f"{TELEGRAM_API}/sendMessage", data={"chat_id": uid, "text": text})
             else:
-                # Text-only
-                session.post(f"{TELEGRAM_API}/sendMessage", data={"chat_id": uid, "text": message})
+                # nothing detected, skip
+                pass
             success += 1
         except Exception:
             failed += 1
         time.sleep(0.05)
 
-    db_log_broadcast("media/text broadcast", total, success, failed)
-    send_message(chat_id, f"✅ Broadcast complete!\nTotal: {total}\nDelivered: {success}\nFailed: {failed}")
-
-
+    kind = "photo" if photo else "video" if video else "document" if document else "text"
+    db_log_broadcast(f"{kind} broadcast", total, success, failed)
+    send_message(chat_id, f"✅ Broadcast complete!\nTotal: {total}\nDelivered: {success}\nFailed: {failed}",
+                 reply_markup=get_reply_keyboard())
 
 # ===== WEBHOOK SETUP =====
 @app.route("/set_webhook", methods=["GET"])
