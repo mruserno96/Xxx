@@ -547,30 +547,47 @@ def handle_admin_panel(chat_id, user_id):
     )
     send_message(chat_id, text, reply_markup=admin_keyboard(), parse_mode="Markdown")
 
-def run_broadcast(admin_user_id, chat_id, text):
+def run_broadcast(admin_user_id, chat_id, message):
     if not db_is_admin(admin_user_id):
         send_message(chat_id, "❌ Not authorized.")
         return
+
     user_ids = db_all_user_ids()
     total = len(user_ids)
     success = 0
     failed = 0
     send_message(chat_id, f"📣 Broadcast started to {total} users...")
 
-    for idx, uid in enumerate(user_ids, start=1):
+    for uid in user_ids:
         try:
-            # Respect Telegram limits: stay ~20-25 msgs/sec
-            send_message(uid, text)
+            if isinstance(message, dict):
+                # Detect type automatically
+                if "photo" in message:
+                    file_id = message["photo"][-1]["file_id"]
+                    caption = message.get("caption", "")
+                    session.post(f"{TELEGRAM_API}/sendPhoto", data={"chat_id": uid, "photo": file_id, "caption": caption})
+                elif "video" in message:
+                    file_id = message["video"]["file_id"]
+                    caption = message.get("caption", "")
+                    session.post(f"{TELEGRAM_API}/sendVideo", data={"chat_id": uid, "video": file_id, "caption": caption})
+                elif "document" in message:
+                    file_id = message["document"]["file_id"]
+                    caption = message.get("caption", "")
+                    session.post(f"{TELEGRAM_API}/sendDocument", data={"chat_id": uid, "document": file_id, "caption": caption})
+                else:
+                    session.post(f"{TELEGRAM_API}/sendMessage", data={"chat_id": uid, "text": message.get("text", "")})
+            else:
+                # Text-only
+                session.post(f"{TELEGRAM_API}/sendMessage", data={"chat_id": uid, "text": message})
             success += 1
         except Exception:
             failed += 1
-        time.sleep(0.05)  # throttle
+        time.sleep(0.05)
 
-        if idx % 200 == 0:
-            send_message(chat_id, f"Progress: {idx}/{total} delivered...")
-
-    db_log_broadcast(text, total, success, failed)
+    db_log_broadcast("media/text broadcast", total, success, failed)
     send_message(chat_id, f"✅ Broadcast complete!\nTotal: {total}\nDelivered: {success}\nFailed: {failed}")
+
+
 
 # ===== WEBHOOK SETUP =====
 @app.route("/set_webhook", methods=["GET"])
