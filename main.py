@@ -662,35 +662,39 @@ def handle_num(chat_id: int, number: str, user_id: Optional[int] = None):
                      reply_markup=keyboard_for(user_id or 0))
         return
 
-    # Step 1: send initial message and fetch message_id safely
+ # Step 1: Send initial message safely
     init_resp = tg("sendMessage", {
         "chat_id": chat_id,
         "text": "🔍 Searching number info... 0%",
         "reply_markup": json.dumps(keyboard_for(user_id or 0))
     })
+
     message_id = None
     try:
         message_id = init_resp.get("result", {}).get("message_id")
     except Exception:
         message_id = None
 
-    # Step 2: update same message with progress bar
+    # Step 2: Update progress (safe timing)
     if message_id:
+        # small delay before first edit to avoid Telegram edit bug
+        time.sleep(0.8)
         for p in [15, 42, 68, 90, 100]:
             try:
-                time.sleep(0.5)
+                # delay between edits (smooth animation)
+                time.sleep(0.8)
                 tg("editMessageText", {
                     "chat_id": chat_id,
                     "message_id": message_id,
                     "text": f"🔍 Searching number info... {p}%"
                 })
             except Exception as e:
-                logging.warning("edit progress failed: %s", e)
+                logging.warning(f"edit progress failed at {p}%: {e}")
     else:
-        # fallback (if message_id missing)
+        # fallback if no message_id
         send_message(chat_id, "🔍 Searching number info... Please wait...")
 
-    # Step 3: call external API
+    # Step 3: Fetch data from API
     api_url = f"https://yahu.site/api/?number={number}&key=The_ajay"
     try:
         r = session.get(api_url, timeout=20)
