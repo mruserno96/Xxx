@@ -231,15 +231,20 @@ def handle_num(chat_id, number, user_id=None):
         r.raise_for_status()
         data = r.json()
 
-        # Step 4: Check if "data" exists but empty
-        if "data" in data and isinstance(data["data"], list) and len(data["data"]) == 0:
-            session.post(f"{TELEGRAM_API}/editMessageText", data={
-                "chat_id": chat_id,
-                "message_id": message_id,
-                "text": "✅ Search Complete! Here's your result ↓"
-            })
-            send_message(chat_id, "⚠️ Number Data Not Available !!!")
-            return
+    # Step 4: Check if "data" exists but empty
+if "data" in data and isinstance(data["data"], list) and len(data["data"]) == 0:
+    session.post(f"{TELEGRAM_API}/editMessageText", data={
+        "chat_id": chat_id,
+        "message_id": message_id,
+        "text": "✅ Search Complete! Here's your result ↓"
+    })
+    
+    bilingual_msg = (
+        "⚠️ *Number Data Not Available !!!*\n"
+        "⚠️ *नंबर का डेटा उपलब्ध नहीं है !!!*"
+    )
+    send_message(chat_id, bilingual_msg, parse_mode="Markdown")
+    return
 
         pretty_json = json.dumps(data, indent=2, ensure_ascii=False)
         if len(pretty_json) > 3900:
