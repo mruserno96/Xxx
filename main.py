@@ -74,6 +74,29 @@ def build_join_keyboard(channels):
     buttons.append([{"text": "✅ Try Again", "callback_data": "try_again"}])
     return {"inline_keyboard": buttons}
 
+def check_membership_and_prompt(chat_id, user_id):
+    """Checks if user joined both channels. Returns True if joined, False otherwise."""
+    ch1_url = CHANNEL1_INVITE_LINK
+    ch2_url = f"https://t.me/{CHANNEL2_CHAT.lstrip('@')}" if CHANNEL2_CHAT else None
+
+    mem1 = is_member(user_id, CHANNEL1_CHAT_ID) if CHANNEL1_CHAT_ID else None
+    mem2 = is_member(user_id, CHANNEL2_CHAT) if CHANNEL2_CHAT else None
+
+    not_joined = []
+    if mem1 is not True:
+        not_joined.append({"label": "Join Group", "url": ch1_url})
+    if mem2 is not True:
+        not_joined.append({"label": "Join Channel", "url": ch2_url})
+
+    if not_joined:
+        send_message(
+            chat_id,
+            "🚫 You must join both channels below before using this bot 👇",
+            reply_markup=build_join_keyboard(not_joined)
+        )
+        return False
+    return True
+
 # ===== ROUTES =====
 @app.route("/", methods=["GET", "POST"])
 def home():
@@ -103,17 +126,19 @@ def webhook():
         if text.startswith("/start"):
             handle_start(chat_id, user_id)
         elif text.startswith("/help"):
-            handle_help(chat_id)
+            handle_help(chat_id, user_id)
         elif text.startswith("/num"):
             parts = text.split()
             if len(parts) < 2:
                 send_message(chat_id, "Usage: /num <10-digit-number>\nExample: /num 9235895648")
             else:
-                handle_num(chat_id, parts[1])
+                handle_num(chat_id, parts[1], user_id)
         else:
+            # Check membership before responding to any normal text
+            if not check_membership_and_prompt(chat_id, user_id):
+                return jsonify(ok=True)
             send_message(chat_id, "Use /help to see commands.")
         return jsonify(ok=True)
-
 
     if "callback_query" in update:
         cb = update["callback_query"]
@@ -133,55 +158,49 @@ def webhook():
 
 # ===== COMMAND HANDLERS =====
 def handle_start(chat_id, user_id):
-    # Access user's first name via Telegram getChat API (fallback safe)
+    # Check membership first
+    if not check_membership_and_prompt(chat_id, user_id):
+        return
+
+    # Personalized bilingual welcome message
     try:
-        # Fetch full user data from Telegram (optional, you can skip this if you already get first_name in message)
         r = session.get(f"{TELEGRAM_API}/getChat", params={"chat_id": chat_id}, timeout=10)
         user_data = r.json().get("result", {})
         first_name = user_data.get("first_name", "Buddy")
     except Exception:
         first_name = "Buddy"
 
-    ch1_url = CHANNEL1_INVITE_LINK
-    ch2_url = f"https://t.me/{CHANNEL2_CHAT.lstrip('@')}" if CHANNEL2_CHAT else None
+    welcome = (
+        f"👋 Hello {first_name}!\n"
+        "Welcome to *Our Number Info Bot!* 🤖\n\n"
+        "📘 Type /help to learn how to use this bot.\n"
+    )
+    send_message(chat_id, welcome, parse_mode="Markdown")
 
-    mem1 = is_member(user_id, CHANNEL1_CHAT_ID) if CHANNEL1_CHAT_ID else None
-    mem2 = is_member(user_id, CHANNEL2_CHAT) if CHANNEL2_CHAT else None
+def handle_help(chat_id, user_id=None):
+    # Check membership first
+    if user_id and not check_membership_and_prompt(chat_id, user_id):
+        return
 
-    not_joined = []
-    if mem1 is not True:
-        not_joined.append({"label": "Join Group", "url": ch1_url})
-    if mem2 is not True:
-        not_joined.append({"label": "Join Channel", "url": ch2_url})
-
-    if not_joined:
-        send_message(
-            chat_id,
-            "Please join both channels below to use this bot, then press Try Again 👇",
-            reply_markup=build_join_keyboard(not_joined)
-        )
-    else:
-        # Personalized welcome message using f-string
-        welcome = (
-            f"Hello {first_name} 👋\n"
-            "Welcome to Our Number Info Bot!\n"
-            "Click /help to learn how to use me!"
-        )
-        send_message(chat_id, welcome)
-
-def handle_help(chat_id):
     help_text = (
-        "📘 *How To Use This Bot*\n\n"
+        "📘 *How To Use This Bot* / 📘 *बोट का उपयोग कैसे करें*\n\n"
         "➡️ `/num <10-digit-number>`\n"
-        "Example: `/num 9235895648`\n\n"
-        "📌 Rules:\n"
+        "💡 *Example / उदाहरण:* `/num 9235895648`\n\n"
+        "📌 *Rules / नियम:*\n"
         "• Only 10-digit Indian numbers accepted (without +91).\n"
+        "• केवल 10 अंकों वाले भारतीय नंबर स्वीकार किए जाएंगे (बिना +91 के)।\n\n"
         "• If you enter 11 digits or letters, it will be rejected.\n"
+        "• यदि आप 11 अंक या अक्षर दर्ज करते हैं, तो इसे अस्वीकार कर दिया जाएगा।\n\n"
         "• Reply will contain information about the given number.\n"
+        "• जवाब में दिए गए नंबर की जानकारी शामिल होगी।\n"
     )
     send_message(chat_id, help_text, parse_mode="Markdown")
 
-def handle_num(chat_id, number):
+def handle_num(chat_id, number, user_id=None):
+    # Check membership first
+    if user_id and not check_membership_and_prompt(chat_id, user_id):
+        return
+
     if not number.isdigit() or len(number) != 10:
         send_message(chat_id, "❌ Only 10-digit numbers allowed. Example: /num 9235895648")
         return
@@ -214,17 +233,14 @@ def handle_num(chat_id, number):
 
         # Step 4: Check if "data" exists but empty
         if "data" in data and isinstance(data["data"], list) and len(data["data"]) == 0:
-            # edit progress message to say "complete"
             session.post(f"{TELEGRAM_API}/editMessageText", data={
                 "chat_id": chat_id,
                 "message_id": message_id,
                 "text": "✅ Search Complete! Here's your result ↓"
             })
-            # send "not available" message
             send_message(chat_id, "⚠️ Number Data Not Available !!!")
             return
 
-        # Step 5: show result normally
         pretty_json = json.dumps(data, indent=2, ensure_ascii=False)
         if len(pretty_json) > 3900:
             pretty_json = pretty_json[:3900] + "\n\n[truncated due to size limit]"
@@ -244,8 +260,6 @@ def handle_num(chat_id, number):
             "message_id": message_id,
             "text": "⚠️ Failed to fetch data. Try again later."
         })
-
-
 
 # ===== WEBHOOK SETUP =====
 @app.route("/set_webhook", methods=["GET"])
