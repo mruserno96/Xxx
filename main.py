@@ -803,7 +803,7 @@ def webhook() -> Any:
                 send_message(chat_id, "⚠️ Unable to fetch referral data. Try again later.")
             return jsonify(ok=True)
      # ✅ Razorpay deposit callback
-      elif data.startswith("deposit_"):
+    elif data.startswith("deposit_"):
         amount = int(data.split("_")[1])
         points = amount // 10
 
