@@ -131,6 +131,7 @@ def keyboard_user() -> Dict[str, Any]:
         "keyboard": [
             [{"text": "🏠 Home"}, {"text": "ℹ️ Help"}],
             [{"text": "📱 Number Info"}],
+            [{"text": "💰 My Balance"}, {"text": "🎁 Refer & Earn"}],
         ],
         "resize_keyboard": True,
         "is_persistent": True,
@@ -145,12 +146,14 @@ def keyboard_admin() -> Dict[str, Any]:
         "keyboard": [
             [{"text": "🏠 Home"}, {"text": "ℹ️ Help"}],
             [{"text": "📱 Number Info"}, {"text": "📊 Live Stats"}, {"text": "📢 Broadcast"}],
+            [{"text": "💰 My Balance"}, {"text": "🎁 Refer & Earn"}],
         ],
         "resize_keyboard": True,
         "is_persistent": True,
         "one_time_keyboard": False,
         "selective": True,
     }
+
 
 
 def keyboard_owner() -> Dict[str, Any]:
@@ -160,12 +163,14 @@ def keyboard_owner() -> Dict[str, Any]:
             [{"text": "🏠 Home"}, {"text": "ℹ️ Help"}],
             [{"text": "📱 Number Info"}, {"text": "📊 Live Stats"}, {"text": "📢 Broadcast"}],
             [{"text": "👑 List Admins"}, {"text": "➕ Add Admin"}, {"text": "➖ Remove Admin"}],
+            [{"text": "💰 My Balance"}, {"text": "🎁 Refer & Earn"}],
         ],
         "resize_keyboard": True,
         "is_persistent": True,
         "one_time_keyboard": False,
         "selective": True,
     }
+
 
 
 def keyboard_none() -> Dict[str, Any]:
@@ -597,15 +602,18 @@ def webhook() -> Any:
 
         # Map bottom keyboard button presses to commands
         mapping = {
-            "🏠 Home": "/start",
-            "ℹ️ Help": "/help",
-            "📊 Live Stats": "/stats",
-            "📢 Broadcast": "/broadcast",
-            "👑 List Admins": "/list_admins",
-            "➕ Add Admin": "/add_admin",
-            "➖ Remove Admin": "/remove_admin",
-            "📱 Number Info": "/numberinfo",
+        "🏠 Home": "/start",
+        "ℹ️ Help": "/help",
+        "📊 Live Stats": "/stats",
+        "📢 Broadcast": "/broadcast",
+        "👑 List Admins": "/list_admins",
+        "➕ Add Admin": "/add_admin",
+        "➖ Remove Admin": "/remove_admin",
+        "📱 Number Info": "/numberinfo",
+        "💰 My Balance": "/balance",
+        "🎁 Refer & Earn": "/refer",
         }
+
         if text in mapping:
             text = mapping[text]
 
