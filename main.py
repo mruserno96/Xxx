@@ -312,6 +312,67 @@ def is_member(user_id: int, chat_identifier: str) -> Optional[bool]:
 # ---------------------------------------------------------------------
 # Supabase persistence helpers
 # ---------------------------------------------------------------------
+
+
+
+
+
+
+
+# ---------------------------------------------------------------------
+# Points + Referral helpers
+# ---------------------------------------------------------------------
+
+def db_get_points(user_id: int) -> int:
+    if not supabase:
+        return 0
+    try:
+        res = supabase.table("points").select("points").eq("user_id", user_id).limit(1).execute()
+        if res.data:
+            return int(res.data[0].get("points", 0))
+        return 0
+    except Exception as e:
+        log.exception("db_get_points failed: %s", e)
+        return 0
+
+
+def db_add_points(user_id: int, amount: int) -> None:
+    """Add (or subtract if negative) user points."""
+    if not supabase:
+        return
+    try:
+        current = db_get_points(user_id)
+        newval = max(current + amount, 0)
+        supabase.table("points").upsert({"user_id": user_id, "points": newval}).execute()
+    except Exception as e:
+        log.exception("db_add_points failed: %s", e)
+
+
+def db_init_points_if_new(user_id: int, referred_by: Optional[int] = None) -> None:
+    """Give 5 points to new user on first start."""
+    if not supabase:
+        return
+    try:
+        res = supabase.table("points").select("user_id").eq("user_id", user_id).execute()
+        if not res.data:
+            supabase.table("points").insert({
+                "user_id": user_id,
+                "points": 5,
+                "referred_by": referred_by
+            }).execute()
+    except Exception as e:
+        log.exception("db_init_points_if_new failed: %s", e)
+
+
+
+
+
+
+
+
+
+
+
 def db_upsert_user(user: Dict[str, Any]) -> None:
     """Upsert user in 'users' table; user is dict with Telegram fields."""
     if not supabase:
@@ -631,8 +692,13 @@ def webhook() -> Any:
                     return jsonify(ok=True)
 
         # Command routing
+
         if text.startswith("/start"):
             handle_start(chat_id, user_id)
+        elif text.startswith("/balance"):
+            handle_balance(chat_id, user_id)
+        elif text.startswith("/refer"):
+            handle_refer(chat_id, user_id)
         elif text.startswith("/help"):
             handle_help(chat_id, user_id)
         elif text.startswith("/stats"):
@@ -686,7 +752,24 @@ def webhook() -> Any:
 # ---------------------------------------------------------------------
 def handle_start(chat_id: int, user_id: int) -> None:
     if not check_membership_and_prompt(chat_id, user_id):
-        return
+        return  
+      # Parse referral parameter if any (like /start 123456)
+    referred_by = None
+    try:
+        text = request.get_json(force=True).get("message", {}).get("text", "")
+        parts = text.split()
+        if len(parts) > 1 and parts[1].isdigit():
+            referred_by = int(parts[1])
+    except Exception:
+        referred_by = None
+
+    # Initialize new user points (5 free)
+    db_init_points_if_new(user_id, referred_by)
+
+    # If came via valid referral and has joined both channels
+    if referred_by and check_membership_and_prompt(chat_id, user_id):
+        db_add_points(referred_by, 2)  # reward referrer
+        send_message(referred_by, f"🎉 Your referral joined successfully! You earned +2 points.")
     first_name = "Buddy"
     try:
         r = session.get(f"{TELEGRAM_API}/getChat", params={"chat_id": chat_id}, timeout=10)
@@ -722,6 +805,18 @@ def handle_help(chat_id: int, user_id: Optional[int] = None) -> None:
     )
     send_message(chat_id, help_text, parse_mode="Markdown", reply_markup=keyboard_for(user_id or 0))
 
+def handle_balance(chat_id: int, user_id: int):
+    pts = db_get_points(user_id)
+    msg = f"💰 *My Balance:* {pts} points\n" \
+          "• Each number search costs 1 point.\n" \
+          "• Earn points by inviting friends!"
+    send_message(chat_id, msg, parse_mode="Markdown", reply_markup=keyboard_for(user_id))
+
+def handle_refer(chat_id: int, user_id: int):
+    link = f"https://t.me/YourBotUsername?start={user_id}"
+    msg = f"👋 Invite friends and earn *2 points* per referral!\n\n" \
+          f"Your referral link:\n{link}"
+    send_message(chat_id, msg, parse_mode="Markdown", reply_markup=keyboard_for(user_id))
 
 def handle_stats(chat_id: int, user_id: int) -> None:
     if role_for(user_id) not in ("owner", "admin"):
@@ -814,7 +909,19 @@ def handle_num(chat_id: int, number: str, user_id: Optional[int] = None) -> None
             "कृपया केवल 10 अंकों का नंबर भेजें। उदाहरण: 9235895648",
             reply_markup=keyboard_for(user_id or 0),
         )
-        return
+        return 
+    # ✅ Step: Check balance before search
+    if user_id:
+        pts = db_get_points(user_id)
+        if pts <= 0:
+            msg = (
+                "⚠️ *You have 0 points left!* ⚠️\n\n"
+                "💡 Each number search costs *1 point*.\n"
+                "🎁 Use /refer to invite friends and earn *+2 points* each!\n"
+                "💳 Deposit option coming soon!"
+            )
+            send_message(chat_id, msg, parse_mode="Markdown", reply_markup=keyboard_for(user_id))
+            return
 
      # Step 1: Send initial message safely
     # Do not attach reply_markup to make the message editable
@@ -879,6 +986,10 @@ def handle_num(chat_id: int, number: str, user_id: Optional[int] = None) -> None
         if message_id:
             edit_message(chat_id, message_id, "✅ Search complete! Here's your result ↓")
         send_message(chat_id, f"<pre>{pretty_json}</pre>", parse_mode="HTML", reply_markup=keyboard_for(user_id or 0))
+          
+     # ✅ Deduct 1 point after successful lookup
+        if user_id:
+            db_add_points(user_id, -1)
 
     except Exception as e:
         log.exception("API fetch failed: %s", e)
