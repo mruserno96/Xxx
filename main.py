@@ -807,6 +807,15 @@ def webhook() -> Any:
         amount = int(data.split("_")[1])
         points = amount // 10
 
+    # Log deposit attempt
+    log.info("💳 Deposit request received: user=%s, amount=%s", user_id, amount)
+
+    if not razorpay_client:
+        log.warning("⚠️ Razorpay client not initialized! Check your env vars.")
+        send_message(chat_id, "⚠️ Payment system not configured. Try again later.")
+        return jsonify(ok=True)
+
+
         try:
             # Create Razorpay order
             order = razorpay_client.order.create({
