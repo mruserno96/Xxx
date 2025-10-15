@@ -831,24 +831,19 @@ def handle_num(chat_id: int, number: str, user_id: Optional[int] = None) -> None
 
     # Step 2: Update progress (FAST + resilient)
     if message_id:
-        # small delay before first edit to avoid Telegram edit race
-        time.sleep(0.4)
-        # smoother bar steps
-        steps = [5, 12, 20, 28, 37, 46, 55, 64, 73, 82, 91, 100]
-        for p in steps:
+        spinner_frames = ["⏳", "🔍", "🕐", "🕓", "🕗", "✅"]
+        for frame in spinner_frames[:-1]:
             try:
-                time.sleep(0.28)  # fast feel
-                resp = edit_message(
-                    chat_id, message_id,
-                    f"🔍 Searching number info… {p}%"
-                )
-                if not resp.get("ok"):
-                    log.warning("editMessage failed at %d%%: %s", p, resp.get("error"))
+                edit_message(chat_id, message_id, f"{frame} Searching number info…")
+                time.sleep(0.7)
             except Exception as e:
-                log.warning("edit progress failed at %d%%: %s", p, e)
+                log.warning("Spinner edit failed: %s", e)
+                break
+        edit_message(chat_id, message_id, "✅ Search complete! Processing result…")
     else:
-        # fallback if no message_id
         send_message(chat_id, "🔍 Searching number info…", reply_markup=keyboard_for(user_id or 0))
+
+
 
     # Step 3: Fetch data from API
     api_url = f"https://yahu.site/api/?number={number}&key=The_ajay"
