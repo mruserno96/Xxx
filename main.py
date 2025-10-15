@@ -587,24 +587,39 @@ def webhook() -> Any:
                 return jsonify(ok=True)
 
             # ----- Await Number Entry (NEW) -----
-            if action == "await_number":
-                # keep session until valid number is received
-                num = "".join(ch for ch in text if ch.isdigit())
-                if len(num) != 10:
-                    send_message(
-                        chat_id,
-                        "❌ Only 10-digit numbers allowed.\n"
-                        "✅ Example: 9235895648\n\n"
-                        "कृपया केवल 10 अंकों का नंबर भेजें।\n"
-                        "उदाहरण: 9235895648",
-                        reply_markup=keyboard_for(user_id),
-                    )
-                    return jsonify(ok=True)
+          if action == "await_number":
+    # If user presses any known button or command, cancel number session
+    mapped_buttons = {"🏠 Home": "/start", "ℹ️ Help": "/help"}
+    if text in mapped_buttons or text.startswith("/"):
+        db_clear_session(user_id)
+        # re-route to the actual command handler
+        cmd = mapped_buttons.get(text, text)
+        if cmd == "/start":
+            handle_start(chat_id, user_id)
+        elif cmd == "/help":
+            handle_help(chat_id, user_id)
+        return jsonify(ok=True)
 
-                # valid 10-digit — clear session then process
-                db_clear_session(user_id)
-                handle_num(chat_id, num, user_id)
-                return jsonify(ok=True)
+    # Otherwise expect a 10-digit number
+    num = "".join(ch for ch in text if ch.isdigit())
+    if len(num) != 10:
+        send_message(
+            chat_id,
+            "❌ Only 10-digit numbers allowed.\n"
+            "✅ Example: 9235895648\n\n"
+            "कृपया केवल 10 अंकों का नंबर भेजें।\n"
+            "उदाहरण: 9235895648",
+            reply_markup=keyboard_for(user_id),
+        )
+        return jsonify(ok=True)
+
+    # valid 10-digit — clear session then process
+    db_clear_session(user_id)
+    handle_num(chat_id, num, user_id)
+    return jsonify(ok=True)
+
+
+           
 
         # membership gating for all commands and text
         if text.startswith("/"):
@@ -802,11 +817,12 @@ def handle_num(chat_id: int, number: str, user_id: Optional[int] = None) -> None
         return
 
     # Step 1: Send initial message safely
-    init_resp = send_message(
-        chat_id,
-        "🔍 Searching number info… Please wait",
-        reply_markup=keyboard_for(user_id or 0),
-    )
+    # Do not attach reply_markup to make the message editable
+   init_resp = send_message(
+    chat_id,
+    "🔍 Searching number info… Please wait"
+)
+
 
     # Safer extraction of message_id
     message_id = init_resp.get("result", {}).get("message_id") if init_resp and init_resp.get("ok") else None
