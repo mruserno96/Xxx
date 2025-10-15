@@ -814,10 +814,35 @@ def handle_help(chat_id: int, user_id: Optional[int] = None) -> None:
     send_message(chat_id, help_text, parse_mode="Markdown", reply_markup=keyboard_for(user_id or 0))
 
 def handle_balance(chat_id: int, user_id: int):
+    """Show fancy balance screen with progress bar and referral info."""
     pts = db_get_points(user_id)
-    msg = f"💰 *My Balance:* {pts} points\n" \
-          "• Each number search costs 1 point.\n" \
-          "• Earn points by inviting friends!"
+
+    # Progress bar (out of 20 points = full)
+    total_bar = 20
+    filled = int((pts / total_bar) * 10)
+    filled = min(filled, 10)
+    bar = "🟩" * filled + "⬜️" * (10 - filled)
+
+    # Get referrals count (optional if you have 'referrals' table)
+    ref_count = 0
+    try:
+        if supabase:
+            res = supabase.table("referrals").select("id").eq("referrer_id", user_id).execute()
+            ref_count = len(res.data or [])
+    except Exception:
+        ref_count = 0
+
+    msg = (
+        f"💰 *My Balance*\n\n"
+        f"🏅 Points: *{pts}*\n"
+        f"{bar}\n\n"
+        f"📞 Searches left: *{pts}*\n"
+        f"👥 Referrals: *{ref_count}*\n\n"
+        f"⚡ Each search costs *1 point*\n"
+        f"🎁 Earn +2 points per referral using /refer\n"
+        f"💳 Deposit feature coming soon!"
+    )
+
     send_message(chat_id, msg, parse_mode="Markdown", reply_markup=keyboard_for(user_id))
 
 def handle_refer(chat_id: int, user_id: int):
