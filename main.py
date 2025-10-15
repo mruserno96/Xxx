@@ -43,10 +43,11 @@ import json
 import logging
 import threading
 import time
+import razorpay
 from datetime import datetime, timezone, date
 from typing import Dict, Any, Optional, List, Tuple
 
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, abort
 import requests
 from requests.adapters import HTTPAdapter, Retry
 
@@ -78,6 +79,20 @@ app = Flask(__name__)
 TOKEN = os.getenv("TELEGRAM_TOKEN", "").strip()
 if not TOKEN:
     log.warning("TELEGRAM_TOKEN is empty! Telegram calls will fail.")
+
+
+
+RAZORPAY_KEY_ID = os.getenv("RAZORPAY_KEY_ID", "")
+RAZORPAY_KEY_SECRET = os.getenv("RAZORPAY_KEY_SECRET", "")
+RAZORPAY_WEBHOOK_SECRET = os.getenv("RAZORPAY_WEBHOOK_SECRET", "")
+
+razorpay_client = None
+if RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET:
+    razorpay_client = razorpay.Client(auth=(RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET))
+
+
+
+
 
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "default-secret").strip()
 TELEGRAM_API = f"https://api.telegram.org/bot{TOKEN}"
@@ -126,12 +141,12 @@ session.mount("http://", HTTPAdapter(max_retries=retries))
 # Keyboards — Reply (bottom) only for commands; Inline only for join URLs
 # ---------------------------------------------------------------------
 def keyboard_user() -> Dict[str, Any]:
-    """Keyboard for normal users."""
     return {
         "keyboard": [
             [{"text": "🏠 Home"}, {"text": "ℹ️ Help"}],
             [{"text": "📱 Number Info"}],
             [{"text": "💰 My Balance"}, {"text": "🎁 Refer & Earn"}],
+            [{"text": "💳 Deposit Points"}],
         ],
         "resize_keyboard": True,
         "is_persistent": True,
@@ -608,6 +623,7 @@ def webhook() -> Any:
         "📢 Broadcast": "/broadcast",
         "👑 List Admins": "/list_admins",
         "➕ Add Admin": "/add_admin",
+        "💳 Deposit Points": "/deposit",
         "➖ Remove Admin": "/remove_admin",
         "📱 Number Info": "/numberinfo",
         "💰 My Balance": "/balance",
@@ -705,6 +721,8 @@ def webhook() -> Any:
             handle_start(chat_id, user_id)
         elif text.startswith("/balance"):
             handle_balance(chat_id, user_id)
+        elif text.startswith("/deposit"):
+            handle_deposit(chat_id, user_id)
         elif text.startswith("/refer"):
             handle_refer(chat_id, user_id)
         elif text.startswith("/help"):
@@ -740,6 +758,16 @@ def webhook() -> Any:
 
     # ----- Handle callbacks (only join retry) -----
     # ----- Handle callbacks (only join retry) -----
+
+
+
+
+
+
+
+
+
+
     if "callback_query" in update:
         cb = update["callback_query"]
         data = cb.get("data", "")
@@ -774,11 +802,59 @@ def webhook() -> Any:
                 log.exception("Failed to fetch referrals: %s", e)
                 send_message(chat_id, "⚠️ Unable to fetch referral data. Try again later.")
             return jsonify(ok=True)
+     # ✅ Razorpay deposit callback
+      elif data.startswith("deposit_"):
+        amount = int(data.split("_")[1])
+        points = amount // 10
 
-        else:
-            answer_callback(callback_id, text="OK")
+        try:
+            # Create Razorpay order
+            order = razorpay_client.order.create({
+                "amount": amount * 100,   # in paise
+                "currency": "INR",
+                "payment_capture": 1,
+                "notes": {"user_id": str(user_id), "points": str(points)}
+            })
 
+            # Generate dynamic QR for that order
+            qr = razorpay_client.qr_code.create({
+                "type": "upi_qr",
+                "name": f"Deposit_{user_id}",
+                "usage": "single_use",
+                "fixed_amount": True,
+                "payment_amount": amount * 100,
+                "description": f"{points} points for user {user_id}",
+                "notes": {"user_id": str(user_id), "points": str(points)},
+                "customer_id": None,
+                "close_by": int(time.time()) + 900,  # QR valid for 15 min
+            })
+
+            qr_image_url = qr.get("image_url")
+            qr_upi_link = qr.get("upi_link")
+
+            msg = (
+                f"💳 *Deposit Started*\n\n"
+                f"Amount: ₹{amount}\n"
+                f"Points: +{points}\n\n"
+                f"📸 Scan this QR to pay:\n"
+                f"Or tap below UPI link:\n{qr_upi_link}\n\n"
+                "Once payment is successful, points will be added automatically ✅"
+            )
+
+            if qr_image_url:
+                send_photo(chat_id, qr_image_url, caption=msg)
+            else:
+                send_message(chat_id, msg, parse_mode="Markdown")
+
+        except Exception as e:
+            log.exception("Razorpay QR create failed: %s", e)
+            send_message(chat_id, "⚠️ Unable to create QR. Try again later.")
         return jsonify(ok=True)
+
+    else:
+        answer_callback(callback_id, text="OK")
+
+    return jsonify(ok=True)
 
 
 # ---------------------------------------------------------------------
@@ -788,6 +864,7 @@ def handle_start(chat_id: int, user_id: int) -> None:
     if not check_membership_and_prompt(chat_id, user_id):
         return  
       # Parse referral parameter if any (like /start 123456)
+    # --- Referral + Points system (Enhanced) ---
     referred_by = None
     try:
         text = request.get_json(force=True).get("message", {}).get("text", "")
@@ -797,13 +874,35 @@ def handle_start(chat_id: int, user_id: int) -> None:
     except Exception:
         referred_by = None
 
-    # Initialize new user points (5 free)
+    # initialize new user (5 free points)
     db_init_points_if_new(user_id, referred_by)
 
-    # If came via valid referral and has joined both channels
-    if referred_by and check_membership_and_prompt(chat_id, user_id):
-        db_add_points(referred_by, 2)  # reward referrer
-        send_message(referred_by, f"🎉 Your referral joined successfully! You earned +2 points.")
+    # If referral is valid (and not self)
+    if referred_by and referred_by != user_id:
+        try:
+            # Check if referral already exists
+            res = supabase.table("referrals").select("*").eq("referrer_id", referred_by).eq("referred_id", user_id).limit(1).execute()
+            if not res.data:
+                # Insert referral record as pending
+                supabase.table("referrals").insert({
+                    "referrer_id": referred_by,
+                    "referred_id": user_id,
+                    "status": "pending"
+                }).execute()
+        except Exception as e:
+            log.exception("Failed to insert referral: %s", e)
+
+    # Once user joins both channels, mark referral completed + reward referrer
+    if referred_by and referred_by != user_id and check_membership_and_prompt(chat_id, user_id):
+        try:
+            # Update referral to 'completed' if pending
+            supabase.table("referrals").update({"status": "completed"}).eq("referrer_id", referred_by).eq("referred_id", user_id).execute()
+            # Reward the referrer
+            db_add_points(referred_by, 2)
+            send_message(referred_by, f"🎉 Your referral joined successfully! You earned +2 points.")
+        except Exception as e:
+            log.exception("Referral complete handling failed: %s", e)
+
     first_name = "Buddy"
     try:
         r = session.get(f"{TELEGRAM_API}/getChat", params={"chat_id": chat_id}, timeout=10)
@@ -911,6 +1010,25 @@ def handle_stats(chat_id: int, user_id: int) -> None:
         f"• Active Today: *{today}*"
     )
     send_message(chat_id, txt, parse_mode="Markdown", reply_markup=keyboard_for(user_id))
+
+
+def handle_deposit(chat_id: int, user_id: int):
+    """Show deposit options and generate Razorpay link."""
+    amounts = [
+        {"label": "₹10 → +1 Point", "value": 10},
+        {"label": "₹50 → +5 Points", "value": 50},
+        {"label": "₹100 → +10 Points", "value": 100},
+        {"label": "₹200 → +20 Points", "value": 200},
+    ]
+    buttons = [
+        [{"text": a["label"], "callback_data": f"deposit_{a['value']}"}] for a in amounts
+    ]
+    send_message(
+        chat_id,
+        "💳 *Deposit Points*\n\nSelect an amount to add points:",
+        parse_mode="Markdown",
+        reply_markup={"inline_keyboard": buttons},
+    )
 
 
 def handle_list_admins(chat_id: int, user_id: int) -> None:
@@ -1179,6 +1297,57 @@ if os.getenv("DISABLE_PING", "").strip() not in ("1", "true", "True"):
         log.warning("Failed to start keepalive thread: %s", e)
 else:
     log.info("Keepalive ping thread disabled by env.")
+
+
+
+
+# ---------------------------------------------------------------------
+# Razorpay Webhook — auto-credit points
+# ---------------------------------------------------------------------
+@app.route("/razorpay_webhook", methods=["POST"])
+def razorpay_webhook():
+    import hmac, hashlib
+
+    payload = request.data
+    signature = request.headers.get("X-Razorpay-Signature", "")
+    body = payload.decode("utf-8")
+
+    try:
+        expected_sig = hmac.new(
+            bytes(RAZORPAY_WEBHOOK_SECRET, "utf-8"),
+            msg=bytes(body, "utf-8"),
+            digestmod=hashlib.sha256,
+        ).hexdigest()
+        if not hmac.compare_digest(expected_sig, signature):
+            log.warning("Invalid Razorpay signature.")
+            return abort(400)
+    except Exception as e:
+        log.exception("Signature verification failed: %s", e)
+        return abort(400)
+
+    data = request.get_json()
+    if data.get("event") == "payment.captured":
+        payment = data["payload"]["payment"]["entity"]
+        notes = payment.get("notes", {})
+        user_id = int(notes.get("user_id", "0"))
+        points = int(notes.get("points", "0"))
+        if user_id and points:
+            db_add_points(user_id, points)
+            send_message(
+                user_id,
+                f"✅ *Payment Received!* ₹{payment['amount']/100:.0f}\n"
+                f"🎯 *{points} points* added to your balance.\n\n"
+                f"💰 Use /balance to check.",
+                parse_mode="Markdown",
+            )
+    return jsonify(ok=True)
+
+
+
+
+
+
+
 
 # ---------------------------------------------------------------------
 # Main (for local dev). On Render/Gunicorn use: gunicorn app:app
