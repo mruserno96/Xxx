@@ -764,10 +764,7 @@ def webhook() -> Any:
 
 
 
-
-
-
-
+    # ----- Handle callback queries -----
     if "callback_query" in update:
         cb = update["callback_query"]
         data = cb.get("data", "")
@@ -802,68 +799,66 @@ def webhook() -> Any:
                 log.exception("Failed to fetch referrals: %s", e)
                 send_message(chat_id, "⚠️ Unable to fetch referral data. Try again later.")
             return jsonify(ok=True)
-     # ✅ Razorpay deposit callback
-    elif data.startswith("deposit_"):
-        amount = int(data.split("_")[1])
-        points = amount // 10
 
-    # Log deposit attempt
-    log.info("💳 Deposit request received: user=%s, amount=%s", user_id, amount)
+        elif data.startswith("deposit_"):
+            amount = int(data.split("_")[1])
+            points = amount // 10
 
-    if not razorpay_client:
-        log.warning("⚠️ Razorpay client not initialized! Check your env vars.")
-        send_message(chat_id, "⚠️ Payment system not configured. Try again later.")
-        return jsonify(ok=True)
+            log.info("💳 Deposit request received: user=%s, amount=%s", user_id, amount)
+
+            if not razorpay_client:
+                log.warning("⚠️ Razorpay client not initialized! Check your env vars.")
+                send_message(chat_id, "⚠️ Payment system not configured. Try again later.")
+                return jsonify(ok=True)
+
+            try:
+                # Create Razorpay order
+                order = razorpay_client.order.create({
+                    "amount": amount * 100,   # in paise
+                    "currency": "INR",
+                    "payment_capture": 1,
+                    "notes": {"user_id": str(user_id), "points": str(points)}
+                })
+
+                # Generate dynamic QR for that order
+                qr = razorpay_client.qr_code.create({
+                    "type": "upi_qr",
+                    "name": f"Deposit_{user_id}",
+                    "usage": "single_use",
+                    "fixed_amount": True,
+                    "payment_amount": amount * 100,
+                    "description": f"{points} points for user {user_id}",
+                    "notes": {"user_id": str(user_id), "points": str(points)},
+                    "close_by": int(time.time()) + 900,  # QR valid for 15 min
+                })
+
+                qr_image_url = qr.get("image_url")
+                qr_upi_link = qr.get("upi_link")
+
+                msg = (
+                    f"💳 *Deposit Started*\n\n"
+                    f"Amount: ₹{amount}\n"
+                    f"Points: +{points}\n\n"
+                    f"📸 Scan this QR to pay:\n"
+                    f"Or tap below UPI link:\n{qr_upi_link}\n\n"
+                    "Once payment is successful, points will be added automatically ✅"
+                )
+
+                if qr_image_url:
+                    send_photo(chat_id, qr_image_url, caption=msg)
+                else:
+                    send_message(chat_id, msg, parse_mode="Markdown")
+
+            except Exception as e:
+                log.exception("Razorpay QR create failed: %s", e)
+                send_message(chat_id, "⚠️ Unable to create QR. Try again later.")
+            return jsonify(ok=True)
 
 
-        try:
-            # Create Razorpay order
-            order = razorpay_client.order.create({
-                "amount": amount * 100,   # in paise
-                "currency": "INR",
-                "payment_capture": 1,
-                "notes": {"user_id": str(user_id), "points": str(points)}
-            })
+        else:
+            answer_callback(callback_id, text="OK")
+            return jsonify(ok=True)
 
-            # Generate dynamic QR for that order
-            qr = razorpay_client.qr_code.create({
-                "type": "upi_qr",
-                "name": f"Deposit_{user_id}",
-                "usage": "single_use",
-                "fixed_amount": True,
-                "payment_amount": amount * 100,
-                "description": f"{points} points for user {user_id}",
-                "notes": {"user_id": str(user_id), "points": str(points)},
-                "customer_id": None,
-                "close_by": int(time.time()) + 900,  # QR valid for 15 min
-            })
-
-            qr_image_url = qr.get("image_url")
-            qr_upi_link = qr.get("upi_link")
-
-            msg = (
-                f"💳 *Deposit Started*\n\n"
-                f"Amount: ₹{amount}\n"
-                f"Points: +{points}\n\n"
-                f"📸 Scan this QR to pay:\n"
-                f"Or tap below UPI link:\n{qr_upi_link}\n\n"
-                "Once payment is successful, points will be added automatically ✅"
-            )
-
-            if qr_image_url:
-                send_photo(chat_id, qr_image_url, caption=msg)
-            else:
-                send_message(chat_id, msg, parse_mode="Markdown")
-
-        except Exception as e:
-            log.exception("Razorpay QR create failed: %s", e)
-            send_message(chat_id, "⚠️ Unable to create QR. Try again later.")
-        return jsonify(ok=True)
-
-    else:
-        answer_callback(callback_id, text="OK")
-
-    return jsonify(ok=True)
 
 
 # ---------------------------------------------------------------------
