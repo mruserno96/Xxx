@@ -746,11 +746,16 @@ def webhook() -> Any:
         callback_id = cb["id"]
         chat_id = cb.get("message", {}).get("chat", {}).get("id")
 
-        if data == "try_again":
-            answer_callback(callback_id, text="Rechecking your join status...")
-            handle_start(chat_id, user_id)
-        else:
-            answer_callback(callback_id, text="OK")
+    if data == "try_again":
+        answer_callback(callback_id, text="Rechecking your join status...")
+        handle_start(chat_id, user_id)
+
+    elif data.startswith("copy_link_"):
+        answer_callback(callback_id, text="✅ Link copied! Share it with your friends.", show_alert=True)
+
+    else:
+        answer_callback(callback_id, text="OK")
+
         return jsonify(ok=True)
 
     return jsonify(ok=True)
@@ -846,10 +851,31 @@ def handle_balance(chat_id: int, user_id: int):
     send_message(chat_id, msg, parse_mode="Markdown", reply_markup=keyboard_for(user_id))
 
 def handle_refer(chat_id: int, user_id: int):
-    link = f"https://t.me/YourBotUsername?start={user_id}"
-    msg = f"👋 Invite friends and earn *2 points* per referral!\n\n" \
-          f"Your referral link:\n{link}"
-    send_message(chat_id, msg, parse_mode="Markdown", reply_markup=keyboard_for(user_id))
+    """Fancy referral card with share/copy buttons."""
+    bot_username = "YourBotUsername"  # 🟢 Replace this with your real bot username (without @)
+    link = f"https://t.me/{bot_username}?start={user_id}"
+
+    msg = (
+        "🎁 *Refer & Earn Points!* 🎁\n\n"
+        "💡 Invite your friends to use this bot and earn *+2 points* per referral.\n\n"
+        "📱 When your friend joins both channels and starts the bot, "
+        "you both get rewarded automatically!\n\n"
+        "🔗 *Your Referral Link:*\n"
+        f"`{link}`\n\n"
+        "👇 Share it now and grow your balance!"
+    )
+
+    inline_buttons = {
+        "inline_keyboard": [
+            [
+                {"text": "📋 Copy Link", "callback_data": f"copy_link_{user_id}"},
+                {"text": "📤 Share to Friends", "url": f"https://t.me/share/url?url={link}&text=🎁%20Join%20this%20NumberInfo%20Bot%20and%20get%20Free%20Points!"},
+            ]
+        ]
+    }
+
+    send_message(chat_id, msg, parse_mode="Markdown", reply_markup=inline_buttons)
+
 
 def handle_stats(chat_id: int, user_id: int) -> None:
     if role_for(user_id) not in ("owner", "admin"):
