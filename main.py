@@ -6,10 +6,10 @@ NumberInfo Telegram Bot (Flask) — Production Ready
 
 Highlights
 ----------
-- Reply keyboards (bottom) for owner/admin/user — no inline admin controls (only URL joins).
+- Reply keyboards (bottom) for owner/admin/user — now includes **📱 Number Info** for easy lookups (no /num needed).
 - Membership gate: checks user is a member of your group/channel(s); shows join links with inline URL buttons.
 - Broadcast: supports text, photo+caption, video+caption, document+caption (uses original file_id to forward).
-- Supabase persistence: users, admin roles, sessions (pending actions), broadcast logs.
+- Supabase persistence: users, admin roles, sessions (pending actions, including number-entry), broadcast logs.
 - Live stats: total users and today's active users.
 - Robust HTTP session with retries; webhook route; optional keepalive ping thread.
 - Safe for redeploy/restart — data stored in Supabase.
@@ -34,13 +34,6 @@ LOG_LEVEL=INFO              # DEBUG|INFO|WARNING|ERROR
 DISABLE_PING=1              # set to 1 to disable keepalive ping thread
 PING_INTERVAL_SECONDS=300   # default 300
 REQUEST_TIMEOUT_SECONDS=20  # default 20
-
-Notes
------
-- Reply keyboards are persistent for private chats only.
-- Join gate uses an inline keyboard because reply keyboards cannot include URL buttons.
-- Sessions are intentionally simple: if a deploy occurs while you are in a "waiting for input"
-  state (e.g., broadcast), you may need to re-initiate the action. Persistent data remains intact.
 """
 
 from __future__ import annotations
@@ -137,6 +130,7 @@ def keyboard_user() -> Dict[str, Any]:
     return {
         "keyboard": [
             [{"text": "🏠 Home"}, {"text": "ℹ️ Help"}],
+            [{"text": "📱 Number Info"}],
         ],
         "resize_keyboard": True,
         "is_persistent": True,
@@ -150,7 +144,7 @@ def keyboard_admin() -> Dict[str, Any]:
     return {
         "keyboard": [
             [{"text": "🏠 Home"}, {"text": "ℹ️ Help"}],
-            [{"text": "📊 Live Stats"}, {"text": "📢 Broadcast"}],
+            [{"text": "📱 Number Info"}, {"text": "📊 Live Stats"}, {"text": "📢 Broadcast"}],
         ],
         "resize_keyboard": True,
         "is_persistent": True,
@@ -164,7 +158,7 @@ def keyboard_owner() -> Dict[str, Any]:
     return {
         "keyboard": [
             [{"text": "🏠 Home"}, {"text": "ℹ️ Help"}],
-            [{"text": "📊 Live Stats"}, {"text": "📢 Broadcast"}],
+            [{"text": "📱 Number Info"}, {"text": "📊 Live Stats"}, {"text": "📢 Broadcast"}],
             [{"text": "👑 List Admins"}, {"text": "➕ Add Admin"}, {"text": "➖ Remove Admin"}],
         ],
         "resize_keyboard": True,
@@ -226,8 +220,7 @@ def keyboard_for(user_id: int) -> Dict[str, Any]:
 def tg(method: str, data: Dict[str, Any], timeout: int = REQUEST_TIMEOUT) -> Dict[str, Any]:
     """
     Low-level Telegram call with logging.
-
-    # FIX: Always return a dict. On error, return {"ok": False, "error": "..."} so callers can branch safely.
+    Always return a dict. On error, return {"ok": False, "error": "..."} so callers can branch safely.
     """
     try:
         resp = session.post(f"{TELEGRAM_API}/{method}", data=data, timeout=timeout)
@@ -371,7 +364,7 @@ def db_all_user_ids() -> List[int]:
 
 
 def db_set_session(user_id: int, action: Optional[str] = None, payload: Optional[Dict[str, Any]] = None) -> None:
-    """Store pending action for admin (e.g., broadcast, add_admin, remove_admin)."""
+    """Store pending action for admin/user (e.g., broadcast, add_admin, remove_admin, await_number)."""
     if not supabase:
         return
     try:
@@ -490,7 +483,7 @@ def health() -> Any:
 def version() -> Any:
     return jsonify(
         name="numberinfo-bot",
-        version="1.0.0",
+        version="1.1.0",
         webhook_url=WEBHOOK_URL,
         webhook_secret=WEBHOOK_SECRET[:4] + "***" if WEBHOOK_SECRET else "",
         supabase=bool(supabase),
@@ -533,7 +526,7 @@ def webhook() -> Any:
         chat_id = chat.get("id")
         user = msg.get("from", {})
         user_id = user.get("id")
-        text = msg.get("text", "") or ""
+        text = (msg.get("text") or "").strip()
         chat_type = chat.get("type")
 
         # ignore groups/channels
@@ -550,21 +543,26 @@ def webhook() -> Any:
             "👑 List Admins": "/list_admins",
             "➕ Add Admin": "/add_admin",
             "➖ Remove Admin": "/remove_admin",
+            "📱 Number Info": "/numberinfo",
         }
         if text in mapping:
             text = mapping[text]
 
-        # check if admin session is waiting for input
+        # check if admin session is waiting for input OR number-entry mode
         sess = db_get_session(user_id)
-        if sess and db_is_admin(user_id):
+        if sess:
             action = sess.get("action")
-            if action == "broadcast_wait_message":
+
+            # ----- Broadcast pending -----
+            if action == "broadcast_wait_message" and db_is_admin(user_id):
                 db_clear_session(user_id)
                 run_broadcast(user_id, chat_id, msg)
                 return jsonify(ok=True)
-            elif action == "add_admin_wait_id":
-                if text.strip().isdigit():
-                    uid = int(text.strip())
+
+            # ----- Add/Remove Admin pending -----
+            if action == "add_admin_wait_id" and db_is_admin(user_id):
+                if text.isdigit():
+                    uid = int(text)
                     ok = db_mark_admin(uid, True)
                     if ok:
                         send_message(chat_id, f"✅ Promoted {uid} to admin.", reply_markup=keyboard_for(user_id))
@@ -574,9 +572,10 @@ def webhook() -> Any:
                     send_message(chat_id, "❌ Send a numeric Telegram user ID.", reply_markup=keyboard_for(user_id))
                 db_clear_session(user_id)
                 return jsonify(ok=True)
-            elif action == "remove_admin_wait_id":
-                if text.strip().isdigit():
-                    uid = int(text.strip())
+
+            if action == "remove_admin_wait_id" and db_is_admin(user_id):
+                if text.isdigit():
+                    uid = int(text)
                     ok = db_mark_admin(uid, False)
                     if ok:
                         send_message(chat_id, f"✅ Removed admin {uid}.", reply_markup=keyboard_for(user_id))
@@ -585,6 +584,26 @@ def webhook() -> Any:
                 else:
                     send_message(chat_id, "❌ Send a numeric Telegram user ID.", reply_markup=keyboard_for(user_id))
                 db_clear_session(user_id)
+                return jsonify(ok=True)
+
+            # ----- Await Number Entry (NEW) -----
+            if action == "await_number":
+                # keep session until valid number is received
+                num = "".join(ch for ch in text if ch.isdigit())
+                if len(num) != 10:
+                    send_message(
+                        chat_id,
+                        "❌ Only 10-digit numbers allowed.\n"
+                        "✅ Example: 9235895648\n\n"
+                        "कृपया केवल 10 अंकों का नंबर भेजें।\n"
+                        "उदाहरण: 9235895648",
+                        reply_markup=keyboard_for(user_id),
+                    )
+                    return jsonify(ok=True)
+
+                # valid 10-digit — clear session then process
+                db_clear_session(user_id)
+                handle_num(chat_id, num, user_id)
                 return jsonify(ok=True)
 
         # membership gating for all commands and text
@@ -596,6 +615,7 @@ def webhook() -> Any:
                 if not check_membership_and_prompt(chat_id, user_id):
                     return jsonify(ok=True)
 
+        # Command routing
         if text.startswith("/start"):
             handle_start(chat_id, user_id)
         elif text.startswith("/help"):
@@ -610,6 +630,8 @@ def webhook() -> Any:
             handle_remove_admin(chat_id, user_id)
         elif text.startswith("/broadcast"):
             handle_broadcast(chat_id, user_id)
+        elif text.startswith("/numberinfo"):  # NEW button flow
+            handle_numberinfo(chat_id, user_id)
         elif text.startswith("/num"):
             parts = text.split()
             if len(parts) < 2:
@@ -621,9 +643,10 @@ def webhook() -> Any:
             else:
                 handle_num(chat_id, parts[1], user_id)
         else:
+            # For any free text, if not in session, still enforce membership
             if not check_membership_and_prompt(chat_id, user_id):
                 return jsonify(ok=True)
-            send_message(chat_id, "Use /help to see commands.", reply_markup=keyboard_for(user_id))
+            send_message(chat_id, "Use the 📱 Number Info button or type /help.", reply_markup=keyboard_for(user_id))
         return jsonify(ok=True)
 
     # ----- Handle callbacks (only join retry) -----
@@ -661,8 +684,8 @@ def handle_start(chat_id: int, user_id: int) -> None:
     welcome = (
         f"👋 Hello {first_name}!\n"
         "Welcome to *Our Number Info Bot!* 🤖\n\n"
-        "📘 Type /help to learn how to use this bot.\n"
-        "📘 बोट का उपयोग करने के लिए /help लिखें।"
+        "Tap *📱 Number Info* to search a number, or type /help.\n"
+        "📘 बोट का उपयोग करने के लिए *📱 Number Info* दबाएं या /help लिखें।"
     )
     send_message(chat_id, welcome, parse_mode="Markdown", reply_markup=keyboard_for(user_id))
 
@@ -672,15 +695,15 @@ def handle_help(chat_id: int, user_id: Optional[int] = None) -> None:
         return
     help_text = (
         "📘 *How To Use This Bot* / 📘 *बोट का उपयोग कैसे करें*\n\n"
-        "➡️ `/num <10-digit-number>`\n"
+        "➡️ Tap *📱 Number Info* and then send a 10-digit number.\n"
+        "➡️ Or use the command:\n"
+        "`/num <10-digit-number>`\n"
         "💡 *Example / उदाहरण:* `/num 9235895648`\n\n"
         "📌 *Rules / नियम:*\n"
         "• Only 10-digit Indian numbers accepted (without +91).\n"
-        "• केवल 10 अंकों वाले भारतीय नंबर स्वीकार किए जाएंगे (बिना +91 के)।\n\n"
-        "• If you enter 11 digits or letters, it will be rejected.\n"
-        "• यदि आप 11 अंक या अक्षर दर्ज करते हैं, तो इसे अस्वीकार कर दिया जाएगा।\n\n"
-        "• Reply will contain information about the given number.\n"
-        "• जवाब में दिए गए नंबर की जानकारी शामिल होगी।\n"
+        "• केवल 10 अंकों वाले भारतीय नंबर स्वीकार किए जाएंगे (बिना +91 के)।\n"
+        "• If you enter letters or not 10 digits, it will be rejected.\n"
+        "• यदि आप 10 अंकों से अलग या अक्षर दर्ज करते हैं, तो यह अस्वीकार हो जाएगा।\n"
     )
     send_message(chat_id, help_text, parse_mode="Markdown", reply_markup=keyboard_for(user_id or 0))
 
@@ -746,14 +769,34 @@ def handle_broadcast(chat_id: int, user_id: int) -> None:
     )
 
 
+def handle_numberinfo(chat_id: int, user_id: int) -> None:
+    """NEW: Prompt user to enter a 10-digit number (bilingual), store session."""
+    if not check_membership_and_prompt(chat_id, user_id):
+        return
+    db_set_session(user_id, "await_number")
+    send_message(
+        chat_id,
+        "🧮 Please enter a *10-digit Indian phone number* without +91.\n"
+        "✅ Example: `9235895648`\n\n"
+        "🧮 कृपया *+91 के बिना 10 अंकों का भारतीय मोबाइल नंबर* भेजें।\n"
+        "✅ उदाहरण: `9235895648`",
+        parse_mode="Markdown",
+        reply_markup=keyboard_for(user_id),
+    )
+
+
 def handle_num(chat_id: int, number: str, user_id: Optional[int] = None) -> None:
     if user_id and not check_membership_and_prompt(chat_id, user_id):
         return
 
+    # Normalize: extract digits only
+    number = "".join(ch for ch in number if ch.isdigit())
+
     if not number.isdigit() or len(number) != 10:
         send_message(
             chat_id,
-            "❌ Only 10-digit numbers allowed. Example: /num 9235895648",
+            "❌ Only 10-digit numbers allowed. Example: 9235895648\n"
+            "कृपया केवल 10 अंकों का नंबर भेजें। उदाहरण: 9235895648",
             reply_markup=keyboard_for(user_id or 0),
         )
         return
@@ -761,24 +804,25 @@ def handle_num(chat_id: int, number: str, user_id: Optional[int] = None) -> None
     # Step 1: Send initial message safely
     init_resp = send_message(
         chat_id,
-        "🔍 Searching number info... Please Wait",
+        "🔍 Searching number info… Please wait",
         reply_markup=keyboard_for(user_id or 0),
     )
 
-    # FIX: safer extraction of message_id
+    # Safer extraction of message_id
     message_id = init_resp.get("result", {}).get("message_id") if init_resp and init_resp.get("ok") else None
 
-    # Step 2: Update progress (with safe timing)
+    # Step 2: Update progress (FAST + resilient)
     if message_id:
-        # FIX: small delay before first edit to avoid Telegram edit race
-        time.sleep(1.0)
-        for p in [15, 42, 68, 90, 100]:
+        # small delay before first edit to avoid Telegram edit race
+        time.sleep(0.4)
+        # smoother bar steps
+        steps = [5, 12, 20, 28, 37, 46, 55, 64, 73, 82, 91, 100]
+        for p in steps:
             try:
-                time.sleep(0.8)  # smooth animation
-                log.info("Editing progress message to %d%% (msg_id=%s)", p, message_id)
+                time.sleep(0.28)  # fast feel
                 resp = edit_message(
                     chat_id, message_id,
-                    f"🔍 Searching number info... {p}%"
+                    f"🔍 Searching number info… {p}%"
                 )
                 if not resp.get("ok"):
                     log.warning("editMessage failed at %d%%: %s", p, resp.get("error"))
@@ -786,7 +830,7 @@ def handle_num(chat_id: int, number: str, user_id: Optional[int] = None) -> None
                 log.warning("edit progress failed at %d%%: %s", p, e)
     else:
         # fallback if no message_id
-        send_message(chat_id, "🔍 Searching number info... Please wait...")
+        send_message(chat_id, "🔍 Searching number info…", reply_markup=keyboard_for(user_id or 0))
 
     # Step 3: Fetch data from API
     api_url = f"https://yahu.site/api/?number={number}&key=The_ajay"
@@ -798,7 +842,7 @@ def handle_num(chat_id: int, number: str, user_id: Optional[int] = None) -> None
         # Step 4: Handle empty data
         if "data" in data and isinstance(data["data"], list) and len(data["data"]) == 0:
             if message_id:
-                edit_message(chat_id, message_id, "✅ Search Complete! Here's your result ↓")
+                edit_message(chat_id, message_id, "✅ Search complete! Here's your result ↓")
             bilingual_msg = (
                 "⚠️ *Number Data Not Available !!!*\n"
                 "⚠️ *नंबर का डेटा उपलब्ध नहीं है !!!*"
@@ -812,7 +856,7 @@ def handle_num(chat_id: int, number: str, user_id: Optional[int] = None) -> None
             pretty_json = pretty_json[:3800] + "\n\n[truncated due to size limit]"
 
         if message_id:
-            edit_message(chat_id, message_id, "✅ Search Complete! Here's your result ↓")
+            edit_message(chat_id, message_id, "✅ Search complete! Here's your result ↓")
         send_message(chat_id, f"<pre>{pretty_json}</pre>", parse_mode="HTML", reply_markup=keyboard_for(user_id or 0))
 
     except Exception as e:
