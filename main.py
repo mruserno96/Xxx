@@ -829,17 +829,25 @@ def handle_num(chat_id: int, number: str, user_id: Optional[int] = None) -> None
     # Safer extraction of message_id
     message_id = init_resp.get("result", {}).get("message_id") if init_resp and init_resp.get("ok") else None
 
-    # Step 2: Update progress (FAST + resilient)
+  # Step 2: Update progress (FAST — fewer, bigger jumps)
     if message_id:
-        spinner_frames = ["⏳", "🔍", "🕐", "🕓", "🕗", "✅"]
-        for frame in spinner_frames[:-1]:
+        # small delay before first edit to avoid Telegram edit race
+        time.sleep(0.3)
+        # faster and simpler steps
+        steps = [22, 44, 66, 88, 100]
+        for p in steps:
             try:
-                edit_message(chat_id, message_id, f"{frame} Searching number info…")
-                time.sleep(0.7)
+                time.sleep(0.35)  # faster animation
+                resp = edit_message(
+                    chat_id,
+                    message_id,
+                    f"🔍 Searching number info… {p}%"
+                )
+                if not resp.get("ok"):
+                    log.warning("editMessage failed at %d%%: %s", p, resp.get("error"))
             except Exception as e:
-                log.warning("Spinner edit failed: %s", e)
-                break
-        edit_message(chat_id, message_id, "✅ Search complete! Processing result…")
+                log.warning("edit progress failed at %d%%: %s", p, e)
+        edit_message(chat_id, message_id, "✅ Search complete! Here's your result ↓")
     else:
         send_message(chat_id, "🔍 Searching number info…", reply_markup=keyboard_for(user_id or 0))
 
