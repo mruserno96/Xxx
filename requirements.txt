@@ -2,5 +2,6 @@ Flask>=2.3
 requests>=2.31
 gunicorn>=21.2
 supabase
+razorpay
 aiogram
 python-telegram-bot
