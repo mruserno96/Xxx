@@ -47,8 +47,10 @@ import razorpay
 
 from datetime import datetime, timezone, date
 from typing import Dict, Any, Optional, List, Tuple
-from cashfree_pg import Cashfree
-
+from cashfree_pg.api_client import Cashfree
+from cashfree_pg.models.create_order_request import CreateOrderRequest
+from cashfree_pg.models.customer_details import CustomerDetails
+from cashfree_pg.models.order_meta import OrderMeta
 from flask import Flask, request, jsonify, abort
 import requests
 from requests.adapters import HTTPAdapter, Retry
@@ -86,13 +88,18 @@ if not TOKEN:
 
 CASHFREE_CLIENT_ID = os.getenv("CASHFREE_CLIENT_ID", "")
 CASHFREE_CLIENT_SECRET = os.getenv("CASHFREE_CLIENT_SECRET", "")
-CASHFREE_ENV = os.getenv("CASHFREE_ENV", "TEST")
+CASHFREE_ENV = os.getenv("CASHFREE_ENV", "TEST").upper()
 CASHFREE_WEBHOOK_SECRET = os.getenv("CASHFREE_WEBHOOK_SECRET", "")
 
+CASHFREE_API_VERSION = None
 if CASHFREE_CLIENT_ID and CASHFREE_CLIENT_SECRET:
-    cashfree = Cashfree(CASHFREE_CLIENT_ID, CASHFREE_CLIENT_SECRET, env=CASHFREE_ENV)
+    # Configure global SDK settings (no object constructor args)
+    Cashfree.XClientId = CASHFREE_CLIENT_ID
+    Cashfree.XClientSecret = CASHFREE_CLIENT_SECRET
+    Cashfree.XEnvironment = Cashfree.SANDBOX if CASHFREE_ENV == "TEST" else Cashfree.PRODUCTION
+    CASHFREE_API_VERSION = "2023-08-01"  # per Cashfree docs
 else:
-    cashfree = None
+    log.warning("Cashfree credentials missing — deposit will be disabled.")
 
 
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "default-secret").strip()
@@ -840,105 +847,122 @@ def webhook() -> Any:
 
 
 
-        elif data.startswith("deposit_"):
-            amount = int(data.split("_")[1])
-            points = amount // 10
+    elif data.startswith("deposit_"):
+        amount = int(data.split("_")[1])
+        points = amount // 10
 
-            if not cashfree:
-                send_message(chat_id, "⚠️ Payment system not configured. Try again later.")
-                return jsonify(ok=True)
+        if not CASHFREE_API_VERSION:
+            send_message(chat_id, "⚠️ Payment system not configured. Try again later.")
+            return jsonify(ok=True)
 
-            try:
-                # 1️⃣ Create Cashfree order
-                order_id = f"CF_{int(time.time())}_{user_id}"
-                order = {
+        try:
+            order_id = f"order_{int(time.time())}_{user_id}"
+
+            customer = CustomerDetails(
+                customer_id=str(user_id),
+                customer_phone="9999999999",
+                customer_name=f"user_{user_id}",
+                customer_email="bot@telegram.com",
+            )
+
+            order_meta = OrderMeta(
+                return_url=f"{SELF_URL}/payment-return?order_id={{order_id}}"
+            )
+
+            req = CreateOrderRequest(
+                order_id=order_id,
+                order_amount=float(amount),
+                order_currency="INR",
+                customer_details=customer,
+                order_meta=order_meta,
+            )
+
+            api = Cashfree()
+            api_resp = api.PGCreateOrder(CASHFREE_API_VERSION, req, None, None)
+            data_out = getattr(api_resp, "data", {}) or {}
+
+            payment_link = data_out.get("payment_link")
+            session_id = data_out.get("payment_session_id")
+
+            if not payment_link and session_id:
+                payment_link = f"https://www.cashfree.com/pg/view/sessions/{session_id}"
+
+            if not payment_link:
+                raise RuntimeError("Cashfree did not return a payment link")
+
+            msg = (
+                f"💸 *Deposit Request Initiated!*\n\n"
+                f"💰 Amount: ₹{amount}\n"
+                f"🏅 You’ll earn: +{points} points\n\n"
+                f"🔗 Tap below to complete payment 👇"
+            )
+
+            inline_buttons = {
+                "inline_keyboard": [
+                    [{"text": "💳 Pay Now", "url": payment_link}],
+                    [{"text": "🔁 Refresh Status", "callback_data": f"check_cashfree_{order_id}"}],
+                ]
+            }
+
+            send_message(chat_id, msg, parse_mode="Markdown", reply_markup=inline_buttons)
+
+            if supabase:
+                supabase.table("payments").insert({
+                    "user_id": user_id,
+                    "chat_id": chat_id,
                     "order_id": order_id,
-                    "order_amount": float(amount),
-                    "order_currency": "INR",
-                    "customer_details": {
-                        "customer_id": str(user_id),
-                        "customer_phone": "9999999999",
-                        "customer_name": f"user_{user_id}",
-                        "customer_email": "bot@telegram.com"
-                    },
-                    "order_note": f"Deposit ₹{amount} for {points} points",
-                    "order_meta": {
-                        "return_url": f"{SELF_URL}/payment-return?order_id={order_id}"
-                    }
-                }
+                    "amount": amount,
+                    "points": points,
+                    "status": "pending",
+                }).execute()
 
-                resp = cashfree.create_order(order)
-                payment_link = resp["payment_link"]
-                qr_url = resp.get("upi_qr", "")
+        except Exception as e:
+            log.exception("Cashfree order creation failed: %s", e)
+            send_message(chat_id, "⚠️ Unable to create payment. Try again later.")
+        return jsonify(ok=True)
 
-                msg = (
-                    f"💸 *Deposit Request Initiated!*\n\n"
-                    f"💰 Amount: ₹{amount}\n"
-                    f"🏅 You’ll earn: +{points} points\n\n"
-                    f"🔗 Tap below or scan QR to complete payment 👇"
+    # ----------------------------------------------------------------------
+    # 🔁 CHECK PAYMENT STATUS (Cashfree)
+    # ----------------------------------------------------------------------
+    elif data.startswith("check_cashfree_"):
+        order_id = data.split("_", 2)[2]
+        if not CASHFREE_API_VERSION:
+            send_message(chat_id, "⚠️ Payment system not configured.")
+            return jsonify(ok=True)
+
+        try:
+            api = Cashfree()
+            api_resp = api.PGFetchOrder(CASHFREE_API_VERSION, order_id, None)
+            info = getattr(api_resp, "data", {}) or {}
+            status = info.get("order_status")
+            amount = info.get("order_amount")
+
+            if status == "PAID":
+                amount_int = int(float(amount))
+                points = amount_int // 10
+                db_add_points(user_id, points)
+                send_message(
+                    chat_id,
+                    f"✅ Payment of ₹{amount_int} confirmed!\n🎯 +{points} points credited.",
+                    parse_mode="Markdown",
+                    reply_markup=keyboard_for(user_id),
                 )
-
-                inline_buttons = {
-                    "inline_keyboard": [
-                        [{"text": "💳 Pay Now", "url": payment_link}],
-                        [{"text": "🔁 Refresh Status", "callback_data": f"check_cashfree_{order_id}"}]
-                    ]
-                }
-
-                if qr_url:
-                    send_photo(chat_id, qr_url, caption=msg, reply_markup=inline_buttons)
-                else:
-                    send_message(chat_id, msg, parse_mode="Markdown", reply_markup=inline_buttons)
-
-                # Save order to DB
                 if supabase:
-                    supabase.table("payments").insert({
-                        "user_id": user_id,
-                        "chat_id": chat_id,
-                        "order_id": order_id,
-                        "amount": amount,
-                        "points": points,
-                        "status": "pending"
-                    }).execute()
+                    supabase.table("payments").update({"status": "paid"}).eq("order_id", order_id).execute()
 
-            except Exception as e:
-                log.exception("Cashfree order creation failed: %s", e)
-                send_message(chat_id, "⚠️ Unable to create payment. Try again later.")
-            return jsonify(ok=True)
+            elif status in ("ACTIVE", "PENDING"):
+                send_message(
+                    chat_id,
+                    "⏳ *Payment Pending!*\n\nPlease complete payment via the link.",
+                    parse_mode="Markdown",
+                )
+            else:
+                send_message(chat_id, f"⚠️ Payment Status: {status or 'UNKNOWN'}")
 
-
-        elif data.startswith("check_cashfree_"):
-            order_id = data.split("_", 2)[2]
-            try:
-                resp = cashfree.get_order(order_id)
-                status = resp["order_status"]
-
-                if status == "PAID":
-                    amount = int(resp["order_amount"])
-                    points = amount // 10
-                    db_add_points(user_id, points)
-                    send_message(
-                        chat_id,
-                        f"✅ Payment of ₹{amount} confirmed!\n🎯 +{points} points credited.",
-                        parse_mode="Markdown",
-                        reply_markup=keyboard_for(user_id)
-                    )
-                    if supabase:
-                        supabase.table("payments").update({"status": "paid"}).eq("order_id", order_id).execute()
-
-                elif status == "ACTIVE":
-                    send_message(
-                        chat_id,
-                        "⏳ *Payment Pending!*\n\nPlease complete payment via link.",
-                        parse_mode="Markdown"
-                    )
-                else:
-                    send_message(chat_id, f"⚠️ Payment Status: {status}")
-            except Exception as e:
-                log.exception("Cashfree status check failed: %s", e)
-                send_message(chat_id, "⚠️ Unable to check payment status.")
-            return jsonify(ok=True)
-
+        except Exception as e:
+            log.exception("Cashfree status check failed: %s", e)
+            send_message(chat_id, "⚠️ Unable to check payment status.")
+        return jsonify(ok=True)
 # ---------------------------------------------------------------------
 # Command Handlers
 # ---------------------------------------------------------------------
