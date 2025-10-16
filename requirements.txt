@@ -9,4 +9,4 @@ python-telegram-bot
 aiogram==2.25.1
 pydantic==1.10.13
 supabase==2.4.0
-cashfree_pg==4.2.0
+cashfree-pg==4.2.4
