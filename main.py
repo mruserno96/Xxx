@@ -800,7 +800,7 @@ def webhook() -> Any:
                     customer_email="bot@telegram.com",
                 )
                 order_meta = OrderMeta(
-                    return_url=f"{SELF_URL}/payment-return?order_id={{order_id}}"
+                    return_url=f"{SELF_URL}/payment-return?order_id={order_id}"
                 )
                 req = CreateOrderRequest(
                     order_id=order_id,
@@ -817,7 +817,7 @@ def webhook() -> Any:
                 session_id = getattr(api_resp.data, "payment_session_id", None)
 
                 if session_id:
-                    payment_link = f"https://payments.cashfree.com/order/#/{session_id}"
+                    payment_link = f"https://payments.cashfree.com/order/#/{session_id.strip()}"
 
                 if not payment_link:
                     log.error("Cashfree order failed: %s", api_resp)
@@ -855,35 +855,50 @@ def webhook() -> Any:
 
         elif data.startswith("check_cashfree_"):
             order_id = data.split("_", 2)[2]
+
             if not CASHFREE_API_VERSION:
                 send_message(chat_id, "⚠️ Payment system not configured.")
                 return jsonify(ok=True)
+
             try:
                 api = Cashfree()
                 api_resp = api.PGFetchOrder(CASHFREE_API_VERSION, order_id, None)
-                info = getattr(api_resp, "data", {}) or {}
-                status = info.get("order_status")
-                amount = info.get("order_amount")
+                order = getattr(api_resp, "data", None)
+
+                if not order:
+                    send_message(chat_id, "⚠️ No order details found.")
+                    return jsonify(ok=True)
+
+                status = getattr(order, "order_status", None)
+                amount = getattr(order, "order_amount", 0)
 
                 if status == "PAID":
                     amount_int = int(float(amount))
                     points = amount_int // 10
                     db_add_points(user_id, points)
-                    send_message(chat_id,
-                                 f"✅ Payment of ₹{amount_int} confirmed!\n🎯 +{points} points credited.",
-                                 parse_mode="Markdown",
-                                 reply_markup=keyboard_for(user_id))
+                    send_message(
+                        chat_id,
+                        f"✅ Payment of ₹{amount_int} confirmed!\n🎯 +{points} points credited.",
+                        parse_mode="Markdown",
+                        reply_markup=keyboard_for(user_id)
+                    )
                     if supabase:
                         supabase.table("payments").update(
-                            {"status": "paid"}).eq("order_id", order_id).execute()
+                            {"status": "paid"}
+                        ).eq("order_id", order_id).execute()
+
                 elif status in ("ACTIVE", "PENDING"):
                     send_message(chat_id, "⏳ Payment pending. Please complete it.")
+
                 else:
                     send_message(chat_id, f"⚠️ Payment Status: {status or 'UNKNOWN'}")
+
             except Exception as e:
                 log.exception("Cashfree status check failed: %s", e)
                 send_message(chat_id, "⚠️ Unable to check payment status.")
+
             return jsonify(ok=True)
+
 
         # End of callback_query
         return jsonify(ok=True)
