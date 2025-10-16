@@ -580,7 +580,6 @@ def version() -> Any:
         supabase=bool(supabase),
     )
 
-
 @app.route(f"/webhook/{WEBHOOK_SECRET}", methods=["POST"])
 def webhook() -> Any:
     update = request.get_json(force=True, silent=True)
@@ -620,61 +619,53 @@ def webhook() -> Any:
         text = (msg.get("text") or "").strip()
         chat_type = chat.get("type")
 
-        # ignore groups/channels
+        # Ignore group messages
         if chat_type != "private":
             log.info("Ignored non-private chat: %s", chat_type)
             return jsonify(ok=True)
 
-        # Map bottom keyboard button presses to commands
+        # Map buttons → commands
         mapping = {
-        "🏠 Home": "/start",
-        "🏠 Home": "/home",
-        "ℹ️ Help": "/help",
-        "📊 Live Stats": "/stats",
-        "📢 Broadcast": "/broadcast",
-        "👑 List Admins": "/list_admins",
-        "➕ Add Admin": "/add_admin",
-        "💳 Deposit Points": "/deposit",
-        "➖ Remove Admin": "/remove_admin",
-        "📱 Number Info": "/numberinfo",
-        "💰 My Balance": "/balance",
-        "💎 Add Points to User": "/add_points",
-        "🎁 Refer & Earn": "/refer",
+            "🏠 Home": "/home",
+            "ℹ️ Help": "/help",
+            "📊 Live Stats": "/stats",
+            "📢 Broadcast": "/broadcast",
+            "👑 List Admins": "/list_admins",
+            "➕ Add Admin": "/add_admin",
+            "➖ Remove Admin": "/remove_admin",
+            "📱 Number Info": "/numberinfo",
+            "💰 My Balance": "/balance",
+            "💎 Add Points to User": "/add_points",
+            "🎁 Refer & Earn": "/refer",
+            "💳 Deposit Points": "/deposit",
         }
-
         if text in mapping:
             text = mapping[text]
 
-        # check if admin session is waiting for input OR number-entry mode
+        # Handle active session (admin actions, number entry, etc.)
         sess = db_get_session(user_id)
         if sess:
             action = sess.get("action")
 
-
-
             if action in ("await_add_points_user", "await_add_points_value"):
-              handle_add_points_process(chat_id, user_id, text)
-              return jsonify(ok=True)
+                handle_add_points_process(chat_id, user_id, text)
+                return jsonify(ok=True)
 
-
-
-            # ----- Broadcast pending -----
             if action == "broadcast_wait_message" and db_is_admin(user_id):
                 db_clear_session(user_id)
                 run_broadcast(user_id, chat_id, msg)
                 return jsonify(ok=True)
 
-            # ----- Add/Remove Admin pending -----
             if action == "add_admin_wait_id" and db_is_admin(user_id):
                 if text.isdigit():
                     uid = int(text)
                     ok = db_mark_admin(uid, True)
-                    if ok:
-                        send_message(chat_id, f"✅ Promoted {uid} to admin.", reply_markup=keyboard_for(user_id))
-                    else:
-                        send_message(chat_id, "❌ Failed to promote.", reply_markup=keyboard_for(user_id))
+                    send_message(chat_id,
+                                 f"✅ Promoted {uid} to admin." if ok else "❌ Failed to promote.",
+                                 reply_markup=keyboard_for(user_id))
                 else:
-                    send_message(chat_id, "❌ Send a numeric Telegram user ID.", reply_markup=keyboard_for(user_id))
+                    send_message(chat_id, "❌ Send a numeric Telegram user ID.",
+                                 reply_markup=keyboard_for(user_id))
                 db_clear_session(user_id)
                 return jsonify(ok=True)
 
@@ -682,63 +673,39 @@ def webhook() -> Any:
                 if text.isdigit():
                     uid = int(text)
                     ok = db_mark_admin(uid, False)
-                    if ok:
-                        send_message(chat_id, f"✅ Removed admin {uid}.", reply_markup=keyboard_for(user_id))
-                    else:
-                        send_message(chat_id, "❌ Failed to remove.", reply_markup=keyboard_for(user_id))
+                    send_message(chat_id,
+                                 f"✅ Removed admin {uid}." if ok else "❌ Failed to remove.",
+                                 reply_markup=keyboard_for(user_id))
                 else:
-                    send_message(chat_id, "❌ Send a numeric Telegram user ID.", reply_markup=keyboard_for(user_id))
+                    send_message(chat_id, "❌ Send a numeric Telegram user ID.",
+                                 reply_markup=keyboard_for(user_id))
                 db_clear_session(user_id)
                 return jsonify(ok=True)
 
             if action == "await_number":
-                # If user presses any known button or command, cancel number session
-                mapped_buttons = {"🏠 Home": "/start", "ℹ️ Help": "/help"}
-                if text in mapped_buttons or text.startswith("/"):
-                    db_clear_session(user_id)
-                    # re-route to the actual command handler
-                    cmd = mapped_buttons.get(text, text)
-                    if cmd == "/start":
-                        handle_start(chat_id, user_id)
-                    elif cmd == "/help":
-                        handle_help(chat_id, user_id)
-                    return jsonify(ok=True)
-
-                # Otherwise expect a 10-digit number
                 num = "".join(ch for ch in text if ch.isdigit())
                 if len(num) != 10:
-                    send_message(
-                        chat_id,
-                        "❌ Only 10-digit numbers allowed.\n"
-                        "✅ Example: 9235895648\n\n"
-                        "कृपया केवल 10 अंकों का नंबर भेजें।\n"
-                        "उदाहरण: 9235895648",
-                        reply_markup=keyboard_for(user_id),
-                    )
+                    send_message(chat_id,
+                                 "❌ Only 10-digit numbers allowed.\n✅ Example: 9235895648",
+                                 reply_markup=keyboard_for(user_id))
                     return jsonify(ok=True)
-
-                # valid 10-digit — clear session then process
                 db_clear_session(user_id)
                 handle_num(chat_id, num, user_id)
                 return jsonify(ok=True)
 
-
-
-           
-
-        # membership gating for all commands and text
+        # Membership check for commands
         if text.startswith("/"):
             cmd = text.split()[0].lower()
-            if cmd in ("/start", "/help"):
-                pass
-            else:
-                if not check_membership_and_prompt(chat_id, user_id):
-                    return jsonify(ok=True)
+            if cmd not in ("/start", "/help") and not check_membership_and_prompt(chat_id, user_id):
+                return jsonify(ok=True)
 
-        # Command routing
-
+        # ----- Command routing -----
         if text.startswith("/start"):
             handle_start(chat_id, user_id)
+        elif text.startswith("/help"):
+            handle_help(chat_id, user_id)
+        elif text.startswith("/home"):
+            handle_home(chat_id, user_id)
         elif text.startswith("/balance"):
             handle_balance(chat_id, user_id)
         elif text.startswith("/add_points"):
@@ -747,10 +714,6 @@ def webhook() -> Any:
             handle_deposit(chat_id, user_id)
         elif text.startswith("/refer"):
             handle_refer(chat_id, user_id)
-        elif text.startswith("/help"):
-            handle_help(chat_id, user_id)        
-        elif text.startswith("/home"):
-            handle_home(chat_id, user_id)
         elif text.startswith("/stats"):
             handle_stats(chat_id, user_id)
         elif text.startswith("/list_admins"):
@@ -761,32 +724,19 @@ def webhook() -> Any:
             handle_remove_admin(chat_id, user_id)
         elif text.startswith("/broadcast"):
             handle_broadcast(chat_id, user_id)
-        elif text.startswith("/numberinfo"):  # NEW button flow
+        elif text.startswith("/numberinfo"):
             handle_numberinfo(chat_id, user_id)
         elif text.startswith("/num"):
             parts = text.split()
             if len(parts) < 2:
-                send_message(
-                    chat_id,
-                    "Usage: /num <10-digit-number>\nExample: /num 9235895648",
-                    reply_markup=keyboard_for(user_id),
-                )
+                send_message(chat_id, "Usage: /num <10-digit-number>",
+                             reply_markup=keyboard_for(user_id))
             else:
                 handle_num(chat_id, parts[1], user_id)
         else:
-            # For any free text, if not in session, still enforce membership
-            if not check_membership_and_prompt(chat_id, user_id):
-                return jsonify(ok=True)
-            send_message(chat_id, "Use the 📱 Number Info button or type /help.", reply_markup=keyboard_for(user_id))
+            send_message(chat_id, "Use the 📱 Number Info button or type /help.",
+                         reply_markup=keyboard_for(user_id))
         return jsonify(ok=True)
-
-    # ----- Handle callbacks (only join retry) -----
-    # ----- Handle callbacks (only join retry) -----
-
-
-
-
-
 
     # ----- Handle callback queries -----
     if "callback_query" in update:
@@ -796,31 +746,22 @@ def webhook() -> Any:
         callback_id = cb["id"]
         chat_id = cb.get("message", {}).get("chat", {}).get("id")
 
-    
         if data == "try_again":
             answer_callback(callback_id, text="Rechecking your join status...")
             if check_membership_and_prompt(chat_id, user_id):
-                # ✅ If user has joined, just open Home panel instead of spamming /start
                 handle_home(chat_id, user_id)
-            else:
-                # Will already have shown join prompt inside check_membership
-                pass
             return jsonify(ok=True)
 
         elif data == "balance_refresh":
             pts = db_get_points(user_id)
-            msg = (
-                f"💰 *Your Current Balance*\n\n"
-                f"🏅 Points: *{pts}*\n\n"
-                f"Use /deposit to add more or /refer to earn free points!"
-            )
-            answer_callback(callback_id, text="Balance updated!", show_alert=False)
-            send_message(chat_id, msg, parse_mode="Markdown", reply_markup=keyboard_for(user_id))
+            msg = f"💰 *Your Balance*\n🏅 Points: *{pts}*"
+            send_message(chat_id, msg, parse_mode="Markdown",
+                         reply_markup=keyboard_for(user_id))
             return jsonify(ok=True)
 
-
         elif data.startswith("copy_link_"):
-            answer_callback(callback_id, text="✅ Link copied! Share it with your friends.", show_alert=True)
+            answer_callback(callback_id, text="✅ Link copied!", show_alert=True)
+            return jsonify(ok=True)
 
         elif data.startswith("my_refs_"):
             try:
@@ -828,141 +769,124 @@ def webhook() -> Any:
                 refs = res.data or []
                 total = len(refs)
                 completed = len([r for r in refs if r.get("status") in ("joined", "completed")])
-                pending = total - completed
-
                 msg = (
                     f"🎯 *My Referrals*\n\n"
                     f"👥 Total Invited: *{total}*\n"
                     f"✅ Joined: *{completed}*\n"
-                    f"🕓 Pending: *{pending}*\n\n"
-                    f"💰 You’ve earned approximately *{completed * 2} points* from referrals!"
+                    f"🕓 Pending: *{total - completed}*\n"
                 )
-                send_message(chat_id, msg, parse_mode="Markdown", reply_markup=keyboard_for(user_id))
+                send_message(chat_id, msg, parse_mode="Markdown",
+                             reply_markup=keyboard_for(user_id))
             except Exception as e:
                 log.exception("Failed to fetch referrals: %s", e)
-                send_message(chat_id, "⚠️ Unable to fetch referral data. Try again later.")
-            return jsonify(ok=True)
-        
-
-
-
-
-    elif data.startswith("deposit_"):
-        amount = int(data.split("_")[1])
-        points = amount // 10
-
-        if not CASHFREE_API_VERSION:
-            send_message(chat_id, "⚠️ Payment system not configured. Try again later.")
+                send_message(chat_id, "⚠️ Unable to fetch referral data.")
             return jsonify(ok=True)
 
-        try:
-            order_id = f"order_{int(time.time())}_{user_id}"
-
-            customer = CustomerDetails(
-                customer_id=str(user_id),
-                customer_phone="9999999999",
-                customer_name=f"user_{user_id}",
-                customer_email="bot@telegram.com",
-            )
-
-            order_meta = OrderMeta(
-                return_url=f"{SELF_URL}/payment-return?order_id={{order_id}}"
-            )
-
-            req = CreateOrderRequest(
-                order_id=order_id,
-                order_amount=float(amount),
-                order_currency="INR",
-                customer_details=customer,
-                order_meta=order_meta,
-            )
-
-            api = Cashfree()
-            api_resp = api.PGCreateOrder(CASHFREE_API_VERSION, req, None, None)
-            data_out = getattr(api_resp, "data", {}) or {}
-
-            payment_link = data_out.get("payment_link")
-            session_id = data_out.get("payment_session_id")
-
-            if not payment_link and session_id:
-                payment_link = f"https://www.cashfree.com/pg/view/sessions/{session_id}"
-
-            if not payment_link:
-                raise RuntimeError("Cashfree did not return a payment link")
-
-            msg = (
-                f"💸 *Deposit Request Initiated!*\n\n"
-                f"💰 Amount: ₹{amount}\n"
-                f"🏅 You’ll earn: +{points} points\n\n"
-                f"🔗 Tap below to complete payment 👇"
-            )
-
-            inline_buttons = {
-                "inline_keyboard": [
-                    [{"text": "💳 Pay Now", "url": payment_link}],
-                    [{"text": "🔁 Refresh Status", "callback_data": f"check_cashfree_{order_id}"}],
-                ]
-            }
-
-            send_message(chat_id, msg, parse_mode="Markdown", reply_markup=inline_buttons)
-
-            if supabase:
-                supabase.table("payments").insert({
-                    "user_id": user_id,
-                    "chat_id": chat_id,
-                    "order_id": order_id,
-                    "amount": amount,
-                    "points": points,
-                    "status": "pending",
-                }).execute()
-
-        except Exception as e:
-            log.exception("Cashfree order creation failed: %s", e)
-            send_message(chat_id, "⚠️ Unable to create payment. Try again later.")
-        return jsonify(ok=True)
-
-    # ----------------------------------------------------------------------
-    # 🔁 CHECK PAYMENT STATUS (Cashfree)
-    # ----------------------------------------------------------------------
-    elif data.startswith("check_cashfree_"):
-        order_id = data.split("_", 2)[2]
-        if not CASHFREE_API_VERSION:
-            send_message(chat_id, "⚠️ Payment system not configured.")
-            return jsonify(ok=True)
-
-        try:
-            api = Cashfree()
-            api_resp = api.PGFetchOrder(CASHFREE_API_VERSION, order_id, None)
-            info = getattr(api_resp, "data", {}) or {}
-            status = info.get("order_status")
-            amount = info.get("order_amount")
-
-            if status == "PAID":
-                amount_int = int(float(amount))
-                points = amount_int // 10
-                db_add_points(user_id, points)
-                send_message(
-                    chat_id,
-                    f"✅ Payment of ₹{amount_int} confirmed!\n🎯 +{points} points credited.",
-                    parse_mode="Markdown",
-                    reply_markup=keyboard_for(user_id),
+        # ✅ Moved inside callback_query (fix)
+        elif data.startswith("deposit_"):
+            amount = int(data.split("_")[1])
+            points = amount // 10
+            if not CASHFREE_API_VERSION:
+                send_message(chat_id, "⚠️ Payment system not configured.")
+                return jsonify(ok=True)
+            try:
+                order_id = f"order_{int(time.time())}_{user_id}"
+                customer = CustomerDetails(
+                    customer_id=str(user_id),
+                    customer_phone="9999999999",
+                    customer_name=f"user_{user_id}",
+                    customer_email="bot@telegram.com",
                 )
+                order_meta = OrderMeta(
+                    return_url=f"{SELF_URL}/payment-return?order_id={{order_id}}"
+                )
+                req = CreateOrderRequest(
+                    order_id=order_id,
+                    order_amount=float(amount),
+                    order_currency="INR",
+                    customer_details=customer,
+                    order_meta=order_meta,
+                )
+                api = Cashfree()
+                api_resp = api.PGCreateOrder(CASHFREE_API_VERSION, req, None, None)
+                data_out = getattr(api_resp, "data", {}) or {}
+
+                payment_link = data_out.get("payment_link")
+                session_id = data_out.get("payment_session_id")
+                if not payment_link and session_id:
+                    payment_link = f"https://www.cashfree.com/pg/view/sessions/{session_id}"
+                if not payment_link:
+                    raise RuntimeError("Cashfree did not return a payment link")
+
+                msg = (
+                    f"💸 *Deposit Request Initiated!*\n\n"
+                    f"💰 Amount: ₹{amount}\n"
+                    f"🏅 You’ll earn: +{points} points\n\n"
+                    f"🔗 Tap below to complete payment 👇"
+                )
+                inline_buttons = {
+                    "inline_keyboard": [
+                        [{"text": "💳 Pay Now", "url": payment_link}],
+                        [{"text": "🔁 Refresh Status",
+                          "callback_data": f"check_cashfree_{order_id}"}],
+                    ]
+                }
+                send_message(chat_id, msg, parse_mode="Markdown",
+                             reply_markup=inline_buttons)
+
                 if supabase:
-                    supabase.table("payments").update({"status": "paid"}).eq("order_id", order_id).execute()
+                    supabase.table("payments").insert({
+                        "user_id": user_id,
+                        "chat_id": chat_id,
+                        "order_id": order_id,
+                        "amount": amount,
+                        "points": points,
+                        "status": "pending",
+                    }).execute()
 
-            elif status in ("ACTIVE", "PENDING"):
-                send_message(
-                    chat_id,
-                    "⏳ *Payment Pending!*\n\nPlease complete payment via the link.",
-                    parse_mode="Markdown",
-                )
-            else:
-                send_message(chat_id, f"⚠️ Payment Status: {status or 'UNKNOWN'}")
+            except Exception as e:
+                log.exception("Cashfree order creation failed: %s", e)
+                send_message(chat_id, "⚠️ Unable to create payment.")
+            return jsonify(ok=True)
 
-        except Exception as e:
-            log.exception("Cashfree status check failed: %s", e)
-            send_message(chat_id, "⚠️ Unable to check payment status.")
+        elif data.startswith("check_cashfree_"):
+            order_id = data.split("_", 2)[2]
+            if not CASHFREE_API_VERSION:
+                send_message(chat_id, "⚠️ Payment system not configured.")
+                return jsonify(ok=True)
+            try:
+                api = Cashfree()
+                api_resp = api.PGFetchOrder(CASHFREE_API_VERSION, order_id, None)
+                info = getattr(api_resp, "data", {}) or {}
+                status = info.get("order_status")
+                amount = info.get("order_amount")
+
+                if status == "PAID":
+                    amount_int = int(float(amount))
+                    points = amount_int // 10
+                    db_add_points(user_id, points)
+                    send_message(chat_id,
+                                 f"✅ Payment of ₹{amount_int} confirmed!\n🎯 +{points} points credited.",
+                                 parse_mode="Markdown",
+                                 reply_markup=keyboard_for(user_id))
+                    if supabase:
+                        supabase.table("payments").update(
+                            {"status": "paid"}).eq("order_id", order_id).execute()
+                elif status in ("ACTIVE", "PENDING"):
+                    send_message(chat_id, "⏳ Payment pending. Please complete it.")
+                else:
+                    send_message(chat_id, f"⚠️ Payment Status: {status or 'UNKNOWN'}")
+            except Exception as e:
+                log.exception("Cashfree status check failed: %s", e)
+                send_message(chat_id, "⚠️ Unable to check payment status.")
+            return jsonify(ok=True)
+
+        # End of callback_query
         return jsonify(ok=True)
+
+    # Default response
+    return jsonify(ok=True)
+
 # ---------------------------------------------------------------------
 # Command Handlers
 # ---------------------------------------------------------------------
@@ -1478,6 +1402,7 @@ else:
 @app.route("/cashfree_webhook", methods=["POST"])
 def cashfree_webhook():
     data = None
+
     import hmac, hashlib
 
     payload = request.data.decode("utf-8")
