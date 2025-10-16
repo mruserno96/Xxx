@@ -776,6 +776,19 @@ def webhook() -> Any:
             answer_callback(callback_id, text="Rechecking your join status...")
             handle_start(chat_id, user_id)
 
+
+        elif data == "balance_refresh":
+            pts = db_get_points(user_id)
+            msg = (
+                f"💰 *Your Current Balance*\n\n"
+                f"🏅 Points: *{pts}*\n\n"
+                f"Use /deposit to add more or /refer to earn free points!"
+            )
+            answer_callback(callback_id, text="Balance updated!", show_alert=False)
+            send_message(chat_id, msg, parse_mode="Markdown", reply_markup=keyboard_for(user_id))
+            return jsonify(ok=True)
+
+
         elif data.startswith("copy_link_"):
             answer_callback(callback_id, text="✅ Link copied! Share it with your friends.", show_alert=True)
 
@@ -812,49 +825,114 @@ def webhook() -> Any:
                 return jsonify(ok=True)
 
             try:
-                # Create Razorpay order
+                # Create Razorpay order (optional but good practice)
                 order = razorpay_client.order.create({
-                    "amount": amount * 100,   # in paise
+                    "amount": amount * 100,
                     "currency": "INR",
                     "payment_capture": 1,
                     "notes": {"user_id": str(user_id), "points": str(points)}
                 })
 
-                # Generate dynamic QR for that order
-                qr = razorpay_client.qr_code.create({
-                    "type": "upi_qr",
-                    "name": f"Deposit_{user_id}",
-                    "usage": "single_use",
-                    "fixed_amount": True,
-                    "payment_amount": amount * 100,
-                    "description": f"{points} points for user {user_id}",
-                    "notes": {"user_id": str(user_id), "points": str(points)},
-                    "close_by": int(time.time()) + 900,  # QR valid for 15 min
+                # ✅ Create Razorpay Payment Link (clean & instant)
+                link = razorpay_client.payment_link.create({
+                    "amount": amount * 100,
+                    "currency": "INR",
+                    "accept_partial": False,
+                    "description": f"Deposit ₹{amount} for {points} points (User {user_id})",
+                    "notes": {"user_id": str(user_id), "points": str(points), "order_id": order["id"]},
+                    "callback_url": f"{SELF_URL}/razorpay_webhook",
+                    "callback_method": "post"
                 })
 
-                qr_image_url = qr.get("image_url")
-                qr_upi_link = qr.get("upi_link")
+                link_id = link.get("id")
+                link_url = link.get("short_url")
+
+                # Save link_id to Supabase for tracking payment status
+                if supabase:
+                    try:
+                        supabase.table("payments").insert({
+                            "user_id": user_id,
+                            "link_id": link_id,
+                            "amount": amount,
+                            "points": points,
+                            "status": "pending"
+                        }).execute()
+                    except Exception as e:
+                        log.warning("Unable to save payment to DB: %s", e)
 
                 msg = (
                     f"💳 *Deposit Started*\n\n"
-                    f"Amount: ₹{amount}\n"
-                    f"Points: +{points}\n\n"
-                    f"📸 Scan this QR to pay:\n"
-                    f"Or tap below UPI link:\n{qr_upi_link}\n\n"
-                    "Once payment is successful, points will be added automatically ✅"
+                    f"💰 Amount: ₹{amount}\n"
+                    f"🎯 Points: +{points}\n\n"
+                    f"🔗 Tap below to pay securely via Razorpay:\n{link_url}\n\n"
+                    "⚡ *Supports:* UPI, Cards, Wallets, NetBanking\n\n"
+                    "⏳ Once paid, status will update automatically!"
                 )
 
-                if qr_image_url:
-                    send_photo(chat_id, qr_image_url, caption=msg)
-                else:
-                    send_message(chat_id, msg, parse_mode="Markdown")
+                inline_buttons = {
+                    "inline_keyboard": [
+                        [{"text": "💳 Pay Now", "url": link_url}],
+                        [{"text": "🔁 Refresh Payment Status", "callback_data": f"check_payment_{link_id}"}]
+                    ]
+                }
+
+                send_message(chat_id, msg, parse_mode="Markdown", reply_markup=inline_buttons)
 
             except Exception as e:
-                log.exception("Razorpay QR create failed: %s", e)
-                send_message(chat_id, "⚠️ Unable to create QR. Try again later.")
+                log.exception("Razorpay Payment Link create failed: %s", e)
+                send_message(chat_id, "⚠️ Unable to create payment link. Try again later.")
             return jsonify(ok=True)
 
 
+        elif data.startswith("check_payment_"):
+            link_id = data.split("_", 2)[2]
+            try:
+                payment_status = razorpay_client.payment_link.fetch(link_id)
+                status = payment_status.get("status")
+                notes = payment_status.get("notes", {})
+                user_points = notes.get("points")
+                amount = int(payment_status.get("amount_paid", 0)) // 100
+
+                if status == "paid":
+                    send_message(
+                        chat_id,
+                        f"✅ *Payment Confirmed!*\n\n"
+                        f"💰 Amount: ₹{amount}\n"
+                        f"🎯 Points: +{user_points}\n\n"
+                        "Your points will reflect shortly if not already added.",
+                        parse_mode="Markdown",
+                        reply_markup=keyboard_for(user_id)
+                    )
+
+                    # Update Supabase record if exists
+                    if supabase:
+                        try:
+                            supabase.table("payments").update({"status": "paid"}).eq("link_id", link_id).execute()
+                        except Exception as e:
+                            log.warning("Unable to update payment status: %s", e)
+
+                elif status == "created":
+                    send_message(
+                        chat_id,
+                        "⏳ *Payment Pending!*\n\nPlease complete your payment using the link below 👇",
+                        parse_mode="Markdown",
+                        reply_markup={
+                            "inline_keyboard": [
+                                [{"text": "💳 Pay Now", "url": payment_status.get("short_url")}],
+                                [{"text": "🔁 Refresh Status", "callback_data": f"check_payment_{link_id}"}]
+                            ]
+                        }
+                    )
+                else:
+                    send_message(
+                        chat_id,
+                        f"⚠️ Current Status: *{status.upper()}*\nIf you already paid, please wait 1–2 minutes.",
+                        parse_mode="Markdown"
+                    )
+            except Exception as e:
+                log.exception("Payment status check failed: %s", e)
+                send_message(chat_id, "⚠️ Unable to check payment status. Try again later.")
+            return jsonify(ok=True)
         else:
             answer_callback(callback_id, text="OK")
             return jsonify(ok=True)
@@ -976,7 +1054,7 @@ def handle_balance(chat_id: int, user_id: int):
 
 def handle_refer(chat_id: int, user_id: int):
     """Fancy referral card with share/copy buttons."""
-    bot_username = "YourBotUsername"  # 🟢 Replace this with your real bot username (without @)
+    bot_username = "OfficialBlackEyeBot"  # 🟢 Replace this with your real bot username (without @)
     link = f"https://t.me/{bot_username}?start={user_id}"
 
     msg = (
@@ -1306,7 +1384,7 @@ else:
 
 
 # ---------------------------------------------------------------------
-# Razorpay Webhook — auto-credit points
+# Razorpay Webhook — auto-credit points + status notification
 # ---------------------------------------------------------------------
 @app.route("/razorpay_webhook", methods=["POST"])
 def razorpay_webhook():
@@ -1323,29 +1401,65 @@ def razorpay_webhook():
             digestmod=hashlib.sha256,
         ).hexdigest()
         if not hmac.compare_digest(expected_sig, signature):
-            log.warning("Invalid Razorpay signature.")
+            log.warning("❌ Invalid Razorpay signature.")
             return abort(400)
     except Exception as e:
         log.exception("Signature verification failed: %s", e)
         return abort(400)
 
     data = request.get_json()
-    if data.get("event") == "payment.captured":
+    event = data.get("event")
+
+    # 🔔 Handle payment success event
+    if event == "payment.captured":
         payment = data["payload"]["payment"]["entity"]
         notes = payment.get("notes", {})
         user_id = int(notes.get("user_id", "0"))
         points = int(notes.get("points", "0"))
+        amount = int(payment.get("amount", 0)) // 100
+
         if user_id and points:
             db_add_points(user_id, points)
+
+            # Update DB if using payments table
+            if supabase:
+                try:
+                    supabase.table("payments").update(
+                        {"status": "paid"}
+                    ).eq("link_id", notes.get("order_id")).execute()
+                except Exception as e:
+                    log.warning("DB update failed on webhook: %s", e)
+
+            msg = (
+                f"🎉 *Payment Received!*\n\n"
+                f"💰 Amount: ₹{amount}\n"
+                f"🎯 Points Added: +{points}\n\n"
+                f"✅ Your balance has been updated.\n"
+                f"💰 Use /balance to view your new total."
+            )
+
+            inline_btn = {
+                "inline_keyboard": [
+                    [{"text": "💰 View Balance", "callback_data": "balance_refresh"}]
+                ]
+            }
+
+            send_message(user_id, msg, parse_mode="Markdown", reply_markup=inline_btn)
+            log.info(f"✅ Payment credited for user {user_id}: ₹{amount}, +{points} points")
+
+    elif event == "payment.failed":
+        payment = data["payload"]["payment"]["entity"]
+        notes = payment.get("notes", {})
+        user_id = int(notes.get("user_id", "0"))
+        if user_id:
             send_message(
                 user_id,
-                f"✅ *Payment Received!* ₹{payment['amount']/100:.0f}\n"
-                f"🎯 *{points} points* added to your balance.\n\n"
-                f"💰 Use /balance to check.",
+                "❌ *Payment Failed*\n\nYour transaction could not be completed.\nPlease try again.",
                 parse_mode="Markdown",
             )
-    return jsonify(ok=True)
+            log.warning(f"❌ Payment failed for user {user_id}")
 
+    return jsonify(ok=True)
 
 
 
