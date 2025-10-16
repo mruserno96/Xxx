@@ -835,14 +835,14 @@ def webhook() -> Any:
 
                 # ✅ Create Razorpay Payment Link (clean & instant)
                 link = razorpay_client.payment_link.create({
-                    "amount": amount * 100,
-                    "currency": "INR",
-                    "accept_partial": False,
-                    "description": f"Deposit ₹{amount} for {points} points (User {user_id})",
-                    "notes": {"user_id": str(user_id), "points": str(points), "order_id": order["id"]},
-                    "callback_url": f"{SELF_URL}/razorpay_webhook",
-                    "callback_method": "post"
-                })
+                   "amount": amount * 100,
+                   "currency": "INR",
+                   "accept_partial": False,
+                   "description": f"Deposit ₹{amount} for {points} points (User {user_id})",
+                   "notes": {"user_id": str(user_id), "points": str(points), "order_id": order["id"]},
+                   "callback_url": f"{SELF_URL}/razorpay_webhook"
+                           })
+ 
 
                 link_id = link.get("id")
                 link_url = link.get("short_url")
