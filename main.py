@@ -44,8 +44,11 @@ import logging
 import threading
 import time
 import razorpay
+import cashfree_pg
+
 from datetime import datetime, timezone, date
 from typing import Dict, Any, Optional, List, Tuple
+from cashfree_pg import CashfreePG
 
 from flask import Flask, request, jsonify, abort
 import requests
@@ -82,16 +85,15 @@ if not TOKEN:
 
 
 
-RAZORPAY_KEY_ID = os.getenv("RAZORPAY_KEY_ID", "")
-RAZORPAY_KEY_SECRET = os.getenv("RAZORPAY_KEY_SECRET", "")
-RAZORPAY_WEBHOOK_SECRET = os.getenv("RAZORPAY_WEBHOOK_SECRET", "")
+CASHFREE_CLIENT_ID = os.getenv("CASHFREE_CLIENT_ID", "")
+CASHFREE_CLIENT_SECRET = os.getenv("CASHFREE_CLIENT_SECRET", "")
+CASHFREE_ENV = os.getenv("CASHFREE_ENV", "TEST")
+CASHFREE_WEBHOOK_SECRET = os.getenv("CASHFREE_WEBHOOK_SECRET", "")
 
-razorpay_client = None
-if RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET:
-    razorpay_client = razorpay.Client(auth=(RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET))
-
-
-
+if CASHFREE_CLIENT_ID and CASHFREE_CLIENT_SECRET:
+    cashfree = CashfreePG(CASHFREE_CLIENT_ID, CASHFREE_CLIENT_SECRET, env=CASHFREE_ENV)
+else:
+    cashfree = None
 
 
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "default-secret").strip()
@@ -834,138 +836,109 @@ def webhook() -> Any:
                 log.exception("Failed to fetch referrals: %s", e)
                 send_message(chat_id, "⚠️ Unable to fetch referral data. Try again later.")
             return jsonify(ok=True)
+        
+
+
+
 
         elif data.startswith("deposit_"):
             amount = int(data.split("_")[1])
             points = amount // 10
 
-            log.info("💳 Deposit request received: user=%s, amount=%s", user_id, amount)
-
-            if not razorpay_client:
-                log.warning("⚠️ Razorpay client not initialized! Check your env vars.")
+            if not cashfree:
                 send_message(chat_id, "⚠️ Payment system not configured. Try again later.")
                 return jsonify(ok=True)
 
             try:
-                # 1) Create Razorpay order
-                order = razorpay_client.order.create({
-                    "amount": amount * 100,
-                    "currency": "INR",
-                    "payment_capture": 1,
-                    "notes": {"user_id": str(user_id), "points": str(points)}
-                })
-
-                # 2) Create Payment Link (NO callback_url for PL)
-                link = razorpay_client.payment_link.create({
-                    "amount": amount * 100,
-                    "currency": "INR",
-                    "accept_partial": False,
-                    "description": f"Deposit ₹{amount} for {points} points (User {user_id})",
-                    "notes": {
-                        "user_id": str(user_id),
-                        "points": str(points),
-                        "order_id": order["id"]   # to correlate in webhook
+                # 1️⃣ Create Cashfree order
+                order_id = f"CF_{int(time.time())}_{user_id}"
+                order = {
+                    "order_id": order_id,
+                    "order_amount": float(amount),
+                    "order_currency": "INR",
+                    "customer_details": {
+                        "customer_id": str(user_id),
+                        "customer_phone": "9999999999",
+                        "customer_name": f"user_{user_id}",
+                        "customer_email": "bot@telegram.com"
+                    },
+                    "order_note": f"Deposit ₹{amount} for {points} points",
+                    "order_meta": {
+                        "return_url": f"{SELF_URL}/payment-return?order_id={order_id}"
                     }
-                })
+                }
 
-                link_id = link.get("id")
-                link_url = link.get("short_url")
+                resp = cashfree.create_order(order)
+                payment_link = resp["payment_link"]
+                qr_url = resp.get("upi_qr", "")
 
-                # 3) Build message + buttons
                 msg = (
                     f"💸 *Deposit Request Initiated!*\n\n"
                     f"💰 Amount: ₹{amount}\n"
                     f"🏅 You’ll earn: +{points} points\n\n"
-                    f"🕒 *Status:* Pending Payment\n"
-                    f"🔗 Tap below to complete payment securely 👇"
+                    f"🔗 Tap below or scan QR to complete payment 👇"
                 )
+
                 inline_buttons = {
                     "inline_keyboard": [
-                        [{"text": "💳 Pay Now", "url": link_url}],
-                        [{"text": "🔁 Refresh Payment Status", "callback_data": f"check_payment_{link_id}"}]
+                        [{"text": "💳 Pay Now", "url": payment_link}],
+                        [{"text": "🔁 Refresh Status", "callback_data": f"check_cashfree_{order_id}"}]
                     ]
                 }
 
-                # 4) Send message first to get message_id
-                sent = send_message(chat_id, msg, parse_mode="Markdown", reply_markup=inline_buttons)
-                message_id = sent.get("result", {}).get("message_id")
+                if qr_url:
+                    send_photo(chat_id, qr_url, caption=msg, reply_markup=inline_buttons)
+                else:
+                    send_message(chat_id, msg, parse_mode="Markdown", reply_markup=inline_buttons)
 
-                # 5) Persist in Supabase
+                # Save order to DB
                 if supabase:
-                    try:
-                        supabase.table("payments").insert({
-                            "user_id": user_id,
-                            "chat_id": chat_id,
-                            "message_id": message_id,
-                            "link_id": link_id,
-                            "order_id": order["id"],
-                            "amount": amount,
-                            "points": points,
-                            "status": "pending"
-                        }).execute()
-                    except Exception as e:
-                        log.warning("Unable to save payment to DB: %s", e)
+                    supabase.table("payments").insert({
+                        "user_id": user_id,
+                        "chat_id": chat_id,
+                        "order_id": order_id,
+                        "amount": amount,
+                        "points": points,
+                        "status": "pending"
+                    }).execute()
 
             except Exception as e:
-                log.exception("Razorpay Payment Link create failed: %s", e)
-                send_message(chat_id, "⚠️ Unable to create payment link. Try again later.")
+                log.exception("Cashfree order creation failed: %s", e)
+                send_message(chat_id, "⚠️ Unable to create payment. Try again later.")
             return jsonify(ok=True)
 
 
-        elif data.startswith("check_payment_"):
-            link_id = data.split("_", 2)[2]
+        elif data.startswith("check_cashfree_"):
+            order_id = data.split("_", 2)[2]
             try:
-                payment_status = razorpay_client.payment_link.fetch(link_id)
-                status = payment_status.get("status")
-                notes = payment_status.get("notes", {})
-                user_points = notes.get("points")
-                amount = int(payment_status.get("amount_paid", 0)) // 100
+                resp = cashfree.get_order(order_id)
+                status = resp["order_status"]
 
-                if status == "paid":
+                if status == "PAID":
+                    amount = int(resp["order_amount"])
+                    points = amount // 10
+                    db_add_points(user_id, points)
                     send_message(
                         chat_id,
-                        f"✅ *Payment Confirmed!*\n\n"
-                        f"💰 Amount: ₹{amount}\n"
-                        f"🎯 Points: +{user_points}\n\n"
-                        "Your points will reflect shortly if not already added.",
+                        f"✅ Payment of ₹{amount} confirmed!\n🎯 +{points} points credited.",
                         parse_mode="Markdown",
                         reply_markup=keyboard_for(user_id)
                     )
-
-                    # Update Supabase record if exists
                     if supabase:
-                        try:
-                            supabase.table("payments").update({"status": "paid"}).eq("link_id", link_id).execute()
-                        except Exception as e:
-                            log.warning("Unable to update payment status: %s", e)
+                        supabase.table("payments").update({"status": "paid"}).eq("order_id", order_id).execute()
 
-                elif status == "created":
+                elif status == "ACTIVE":
                     send_message(
                         chat_id,
-                        "⏳ *Payment Pending!*\n\nPlease complete your payment using the link below 👇",
-                        parse_mode="Markdown",
-                        reply_markup={
-                            "inline_keyboard": [
-                                [{"text": "💳 Pay Now", "url": payment_status.get("short_url")}],
-                                [{"text": "🔁 Refresh Status", "callback_data": f"check_payment_{link_id}"}]
-                            ]
-                        }
-                    )
-                else:
-                    send_message(
-                        chat_id,
-                        f"⚠️ Current Status: *{status.upper()}*\nIf you already paid, please wait 1–2 minutes.",
+                        "⏳ *Payment Pending!*\n\nPlease complete payment via link.",
                         parse_mode="Markdown"
                     )
+                else:
+                    send_message(chat_id, f"⚠️ Payment Status: {status}")
             except Exception as e:
-                log.exception("Payment status check failed: %s", e)
-                send_message(chat_id, "⚠️ Unable to check payment status. Try again later.")
+                log.exception("Cashfree status check failed: %s", e)
+                send_message(chat_id, "⚠️ Unable to check payment status.")
             return jsonify(ok=True)
-        else:
-            answer_callback(callback_id, text="OK")
-            return jsonify(ok=True)
-
-
 
 # ---------------------------------------------------------------------
 # Command Handlers
@@ -1479,79 +1452,42 @@ else:
 # ---------------------------------------------------------------------
 # Razorpay Webhook — auto-credit points + status notification
 # ---------------------------------------------------------------------
-@app.route("/razorpay_webhook", methods=["POST"])
-def razorpay_webhook():
+@app.route("/cashfree_webhook", methods=["POST"])
+def cashfree_webhook():
     import hmac, hashlib
 
-    payload = request.data
-    signature = request.headers.get("X-Razorpay-Signature", "")
-    body = payload.decode("utf-8")
+    payload = request.data.decode("utf-8")
+    signature = request.headers.get("x-webhook-signature", "")
+    expected_sig = hmac.new(
+        bytes(CASHFREE_WEBHOOK_SECRET, "utf-8"),
+        msg=bytes(payload, "utf-8"),
+        digestmod=hashlib.sha256,
+    ).hexdigest()
 
-    try:
-        expected_sig = hmac.new(
-            bytes(RAZORPAY_WEBHOOK_SECRET, "utf-8"),
-            msg=bytes(body, "utf-8"),
-            digestmod=hashlib.sha256,
-        ).hexdigest()
-        if not hmac.compare_digest(expected_sig, signature):
-            log.warning("❌ Invalid Razorpay signature.")
-            return abort(400)
-    except Exception as e:
-        log.exception("Signature verification failed: %s", e)
+    if not hmac.compare_digest(signature, expected_sig):
+        log.warning("Invalid Cashfree webhook signature.")
         return abort(400)
 
     data = request.get_json()
     event = data.get("event")
-    payment = data.get("payload", {}).get("payment", {}).get("entity", {})
-    notes = payment.get("notes", {})
-    order_id = notes.get("order_id")  # ⬅️ add this
+    order_id = data.get("data", {}).get("order", {}).get("order_id")
+    status = data.get("data", {}).get("order", {}).get("order_status")
 
-    user_id = int(notes.get("user_id", "0"))
-    points = int(notes.get("points", "0"))
-    amount = int(payment.get("amount", 0)) // 100
+    # lookup DB
+    if supabase:
+        res = supabase.table("payments").select("user_id, chat_id").eq("order_id", order_id).limit(1).execute()
+        if res.data:
+            user_id = res.data[0]["user_id"]
+            chat_id = res.data[0]["chat_id"]
+        else:
+            user_id, chat_id = None, None
 
-    chat_id, message_id = None, None
-    if supabase and order_id:
-        try:
-            res = supabase.table("payments").select("chat_id, message_id").eq("order_id", order_id).limit(1).execute()
-            if res.data:
-                chat_id = res.data[0].get("chat_id")
-                message_id = res.data[0].get("message_id")
-        except Exception as e:
-            log.warning("Failed to fetch pending payment by order_id: %s", e)
-
-    if event == "payment.captured":
+    if event == "ORDER_PAID" or status == "PAID":
+        points = int(data["data"]["order"]["order_amount"]) // 10
         db_add_points(user_id, points)
-        if supabase and order_id:
+        send_message(chat_id, f"✅ Payment of ₹{data['data']['order']['order_amount']} confirmed! +{points} points added.", parse_mode="Markdown")
+        if supabase:
             supabase.table("payments").update({"status": "paid"}).eq("order_id", order_id).execute()
-        msg = (
-            f"✅ *Payment Confirmed!*\n\n"
-            f"💰 Amount: ₹{amount}\n"
-            f"🎯 Points: +{points}\n\n"
-            f"💰 *Points have been credited successfully!*"
-        )
-
-        if chat_id and message_id:
-            edit_message(chat_id, message_id, msg, parse_mode="Markdown")
-        else:
-            send_message(user_id, msg, parse_mode="Markdown")
-
-        log.info(f"✅ Payment credited for user {user_id}: ₹{amount}, +{points} points")
-
-    elif event == "payment.failed":
-        if supabase and order_id:
-            supabase.table("payments").update({"status": "failed"}).eq("order_id", order_id).execute()
-        fail_msg = (
-            f"❌ *Payment Failed*\n\n"
-            f"💰 Amount: ₹{amount}\n"
-            f"Please try again later."
-        )
-        if chat_id and message_id:
-            edit_message(chat_id, message_id, fail_msg, parse_mode="Markdown")
-        else:
-            send_message(user_id, fail_msg, parse_mode="Markdown")
-
-        log.warning(f"❌ Payment failed for user {user_id}")
 
     return jsonify(ok=True)
 
