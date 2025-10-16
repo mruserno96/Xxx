@@ -179,12 +179,14 @@ def keyboard_owner() -> Dict[str, Any]:
             [{"text": "📱 Number Info"}, {"text": "📊 Live Stats"}, {"text": "📢 Broadcast"}],
             [{"text": "👑 List Admins"}, {"text": "➕ Add Admin"}, {"text": "➖ Remove Admin"}],
             [{"text": "💰 My Balance"}, {"text": "🎁 Refer & Earn"}],
+            [{"text": "💎 Add Points to User"}],  # 🆕 new
         ],
         "resize_keyboard": True,
         "is_persistent": True,
         "one_time_keyboard": False,
         "selective": True,
     }
+
 
 
 
@@ -638,6 +640,14 @@ def webhook() -> Any:
         if sess:
             action = sess.get("action")
 
+
+
+            if action in ("await_add_points_user", "await_add_points_value"):
+              handle_add_points_process(chat_id, user_id, text)
+              return jsonify(ok=True)
+
+
+
             # ----- Broadcast pending -----
             if action == "broadcast_wait_message" and db_is_admin(user_id):
                 db_clear_session(user_id)
@@ -721,6 +731,8 @@ def webhook() -> Any:
             handle_start(chat_id, user_id)
         elif text.startswith("/balance"):
             handle_balance(chat_id, user_id)
+        elif text.startswith("/add_points"):
+            handle_add_points_start(chat_id, user_id)
         elif text.startswith("/deposit"):
             handle_deposit(chat_id, user_id)
         elif text.startswith("/refer"):
@@ -949,57 +961,68 @@ def webhook() -> Any:
 # Command Handlers
 # ---------------------------------------------------------------------
 def handle_start(chat_id: int, user_id: int) -> None:
+    """
+    Improved /start:
+    - Avoids repeating welcome every 5s
+    - Handles referral once
+    - Skips referral logic if user already exists
+    """
+    # ✅ Step 1: membership check first
     if not check_membership_and_prompt(chat_id, user_id):
-        return  
-      # Parse referral parameter if any (like /start 123456)
-    # --- Referral + Points system (Enhanced) ---
+        return
+
+    # ✅ Step 2: Check if user is already in DB (avoid double insert)
+    already_exists = False
+    try:
+        if supabase:
+            res = supabase.table("users").select("id").eq("id", user_id).limit(1).execute()
+            already_exists = bool(res.data)
+    except Exception:
+        already_exists = False
+
+    # ✅ Step 3: Parse referral only if new user
     referred_by = None
+    if not already_exists:
+        try:
+            text = request.get_json(force=True).get("message", {}).get("text", "")
+            parts = text.split()
+            if len(parts) > 1 and parts[1].isdigit():
+                referred_by = int(parts[1])
+        except Exception:
+            referred_by = None
+
+        # Initialize points for new user
+        db_init_points_if_new(user_id, referred_by)
+
+        # Handle referral only once
+        if referred_by and referred_by != user_id:
+            try:
+                res = supabase.table("referrals").select("*").eq("referrer_id", referred_by).eq("referred_id", user_id).limit(1).execute()
+                if not res.data:
+                    supabase.table("referrals").insert({
+                        "referrer_id": referred_by,
+                        "referred_id": user_id,
+                        "status": "pending"
+                    }).execute()
+            except Exception as e:
+                log.exception("Referral insert failed: %s", e)
+
+    # ✅ Step 4: Complete referral if pending
     try:
-        text = request.get_json(force=True).get("message", {}).get("text", "")
-        parts = text.split()
-        if len(parts) > 1 and parts[1].isdigit():
-            referred_by = int(parts[1])
-    except Exception:
-        referred_by = None
-
-    # initialize new user (5 free points)
-    db_init_points_if_new(user_id, referred_by)
-
-    # If referral is valid (and not self)
-    if referred_by and referred_by != user_id:
-        try:
-            # Check if referral already exists
-            res = supabase.table("referrals").select("*").eq("referrer_id", referred_by).eq("referred_id", user_id).limit(1).execute()
-            if not res.data:
-                # Insert referral record as pending
-                supabase.table("referrals").insert({
-                    "referrer_id": referred_by,
-                    "referred_id": user_id,
-                    "status": "pending"
-                }).execute()
-        except Exception as e:
-            log.exception("Failed to insert referral: %s", e)
-
-    # Once user joins both channels, mark referral completed + reward referrer
-    if referred_by and referred_by != user_id and check_membership_and_prompt(chat_id, user_id):
-        try:
-            # Update referral to 'completed' if pending
-            supabase.table("referrals").update({"status": "completed"}).eq("referrer_id", referred_by).eq("referred_id", user_id).execute()
-            # Reward the referrer
-            db_add_points(referred_by, 2)
-            send_message(referred_by, f"🎉 Your referral joined successfully! You earned +2 points.")
-        except Exception as e:
-            log.exception("Referral complete handling failed: %s", e)
-
+        if supabase:
+            res = supabase.table("referrals").select("*").eq("referred_id", user_id).eq("status", "pending").execute()
+            for ref in res.data or []:
+                referrer_id = ref.get("referrer_id")
+                if referrer_id and check_membership_and_prompt(chat_id, user_id):
+                    supabase.table("referrals").update({"status": "completed"}).eq("id", ref["id"]).execute()
+                    db_add_points(referrer_id, 2)
+                    send_message(referrer_id, f"🎉 Your referral joined successfully! You earned +2 points.")
+    except Exception as e:
+        log.exception("Referral completion failed: %s", e)
+        
     first_name = "Buddy"
-    try:
-        r = session.get(f"{TELEGRAM_API}/getChat", params={"chat_id": chat_id}, timeout=10)
-        if r.status_code == 200:
-            user_data = r.json().get("result", {})
-            first_name = user_data.get("first_name", first_name)
-    except Exception:
-        pass
 
+    # ✅ Step 5: Send welcome only once (not for Try Again or Home)
     welcome = (
         f"👋 Hello {first_name}!\n"
         "Welcome to *Our Number Info Bot!* 🤖\n\n"
@@ -1007,7 +1030,6 @@ def handle_start(chat_id: int, user_id: int) -> None:
         "📘 बोट का उपयोग करने के लिए *📱 Number Info* दबाएं या /help लिखें।"
     )
     send_message(chat_id, welcome, parse_mode="Markdown", reply_markup=keyboard_for(user_id))
-
 
 def handle_help(chat_id: int, user_id: Optional[int] = None) -> None:
     if user_id and not check_membership_and_prompt(chat_id, user_id):
@@ -1057,6 +1079,58 @@ def handle_balance(chat_id: int, user_id: int):
     )
 
     send_message(chat_id, msg, parse_mode="Markdown", reply_markup=keyboard_for(user_id))
+
+
+
+
+
+
+def handle_add_points_start(chat_id: int, user_id: int):
+    if role_for(user_id) != "owner":
+        send_message(chat_id, "❌ Only owner can add points.", reply_markup=keyboard_for(user_id))
+        return
+    db_set_session(user_id, "await_add_points_user")
+    send_message(chat_id, "💎 Send the *user_id* to whom you want to add points:", parse_mode="Markdown")
+
+
+def handle_add_points_process(chat_id: int, owner_id: int, text: str):
+    sess = db_get_session(owner_id)
+    if not sess:
+        return
+
+    action = sess.get("action")
+    payload = sess.get("payload", {})
+
+    # Step 1: expect user_id
+    if action == "await_add_points_user":
+        if not text.isdigit():
+            send_message(chat_id, "❌ Please send a valid numeric user_id.")
+            return
+        db_set_session(owner_id, "await_add_points_value", {"target_user": int(text)})
+        send_message(chat_id, "✅ User ID received.\nNow send the *number of points* to add:", parse_mode="Markdown")
+        return
+
+    # Step 2: expect amount
+    if action == "await_add_points_value":
+        if not text.isdigit():
+            send_message(chat_id, "❌ Please send a valid number.")
+            return
+        points = int(text)
+        target_user = payload.get("target_user")
+        if not target_user:
+            send_message(chat_id, "⚠️ Missing target user, start again with /add_points.")
+            db_clear_session(owner_id)
+            return
+
+        db_add_points(target_user, points)
+        send_message(chat_id, f"✅ Added *{points} points* to user `{target_user}`.", parse_mode="Markdown")
+        send_message(target_user, f"💎 You have received *+{points} points!* from the owner 🎉", parse_mode="Markdown")
+        db_clear_session(owner_id)
+        return
+
+
+
+
 
 def handle_refer(chat_id: int, user_id: int):
     """Fancy referral card with share/copy buttons."""
