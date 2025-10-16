@@ -6,7 +6,6 @@ razorpay
 aiogram
 python-telegram-bot
 
-Python 3.11.9
 Flask 3.0.3
 aiogram 2.25.1
 cashfree-pg 1.0.3
