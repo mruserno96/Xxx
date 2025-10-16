@@ -6,3 +6,4 @@ razorpay
 aiogram
 python-telegram-bot
 cashfree-pg
+pydantic==1.10.13
