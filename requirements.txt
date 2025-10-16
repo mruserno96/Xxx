@@ -5,3 +5,4 @@ supabase
 razorpay
 aiogram
 python-telegram-bot
+cashfree-pg
