@@ -1477,6 +1477,7 @@ else:
 # ---------------------------------------------------------------------
 @app.route("/cashfree_webhook", methods=["POST"])
 def cashfree_webhook():
+    data = None
     import hmac, hashlib
 
     payload = request.data.decode("utf-8")
