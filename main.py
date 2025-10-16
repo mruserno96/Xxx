@@ -620,6 +620,7 @@ def webhook() -> Any:
         # Map bottom keyboard button presses to commands
         mapping = {
         "🏠 Home": "/start",
+        "🏠 Home": "/home",
         "ℹ️ Help": "/help",
         "📊 Live Stats": "/stats",
         "📢 Broadcast": "/broadcast",
@@ -629,6 +630,7 @@ def webhook() -> Any:
         "➖ Remove Admin": "/remove_admin",
         "📱 Number Info": "/numberinfo",
         "💰 My Balance": "/balance",
+        "💎 Add Points to User": "/add_points",
         "🎁 Refer & Earn": "/refer",
         }
 
@@ -738,7 +740,9 @@ def webhook() -> Any:
         elif text.startswith("/refer"):
             handle_refer(chat_id, user_id)
         elif text.startswith("/help"):
-            handle_help(chat_id, user_id)
+            handle_help(chat_id, user_id)        
+        elif text.startswith("/home"):
+            handle_home(chat_id, user_id)
         elif text.startswith("/stats"):
             handle_stats(chat_id, user_id)
         elif text.startswith("/list_admins"):
@@ -784,10 +788,16 @@ def webhook() -> Any:
         callback_id = cb["id"]
         chat_id = cb.get("message", {}).get("chat", {}).get("id")
 
+    
         if data == "try_again":
             answer_callback(callback_id, text="Rechecking your join status...")
-            handle_start(chat_id, user_id)
-
+            if check_membership_and_prompt(chat_id, user_id):
+                # ✅ If user has joined, just open Home panel instead of spamming /start
+                handle_home(chat_id, user_id)
+            else:
+                # Will already have shown join prompt inside check_membership
+                pass
+            return jsonify(ok=True)
 
         elif data == "balance_refresh":
             pts = db_get_points(user_id)
@@ -961,68 +971,50 @@ def webhook() -> Any:
 # Command Handlers
 # ---------------------------------------------------------------------
 def handle_start(chat_id: int, user_id: int) -> None:
-    """
-    Improved /start:
-    - Avoids repeating welcome every 5s
-    - Handles referral once
-    - Skips referral logic if user already exists
-    """
-    # ✅ Step 1: membership check first
+    # Step 1: membership gate
     if not check_membership_and_prompt(chat_id, user_id):
         return
 
-    # ✅ Step 2: Check if user is already in DB (avoid double insert)
-    already_exists = False
-    try:
-        if supabase:
-            res = supabase.table("users").select("id").eq("id", user_id).limit(1).execute()
-            already_exists = bool(res.data)
-    except Exception:
-        already_exists = False
-
-    # ✅ Step 3: Parse referral only if new user
+    # Step 2: parse referral param (if any)
     referred_by = None
-    if not already_exists:
+    try:
+        text = request.get_json(force=True).get("message", {}).get("text", "") or ""
+        parts = text.split()
+        if len(parts) > 1 and parts[1].isdigit():
+            referred_by = int(parts[1])
+    except Exception:
+        referred_by = None
+
+    # Step 3: always try to init points (only inserts if user not in points table)
+    db_init_points_if_new(user_id, referred_by)
+
+    # Step 4: create referral record only if not present
+    if referred_by and referred_by != user_id and supabase:
         try:
-            text = request.get_json(force=True).get("message", {}).get("text", "")
-            parts = text.split()
-            if len(parts) > 1 and parts[1].isdigit():
-                referred_by = int(parts[1])
-        except Exception:
-            referred_by = None
+            exist = supabase.table("referrals").select("id").eq("referrer_id", referred_by).eq("referred_id", user_id).limit(1).execute()
+            if not (exist.data or []):
+                supabase.table("referrals").insert({
+                    "referrer_id": referred_by,
+                    "referred_id": user_id,
+                    "status": "pending"
+                }).execute()
+        except Exception as e:
+            log.exception("Referral insert failed: %s", e)
 
-        # Initialize points for new user
-        db_init_points_if_new(user_id, referred_by)
-
-        # Handle referral only once
-        if referred_by and referred_by != user_id:
-            try:
-                res = supabase.table("referrals").select("*").eq("referrer_id", referred_by).eq("referred_id", user_id).limit(1).execute()
-                if not res.data:
-                    supabase.table("referrals").insert({
-                        "referrer_id": referred_by,
-                        "referred_id": user_id,
-                        "status": "pending"
-                    }).execute()
-            except Exception as e:
-                log.exception("Referral insert failed: %s", e)
-
-    # ✅ Step 4: Complete referral if pending
+    # Step 5: if any pending referral now meets membership, complete + reward
     try:
         if supabase:
-            res = supabase.table("referrals").select("*").eq("referred_id", user_id).eq("status", "pending").execute()
+            res = supabase.table("referrals").select("id, referrer_id").eq("referred_id", user_id).eq("status", "pending").execute()
             for ref in res.data or []:
-                referrer_id = ref.get("referrer_id")
-                if referrer_id and check_membership_and_prompt(chat_id, user_id):
+                if check_membership_and_prompt(chat_id, user_id):
                     supabase.table("referrals").update({"status": "completed"}).eq("id", ref["id"]).execute()
-                    db_add_points(referrer_id, 2)
-                    send_message(referrer_id, f"🎉 Your referral joined successfully! You earned +2 points.")
+                    db_add_points(ref["referrer_id"], 2)
+                    send_message(ref["referrer_id"], "🎉 Your referral joined successfully! You earned +2 points.")
     except Exception as e:
         log.exception("Referral completion failed: %s", e)
-        
-    first_name = "Buddy"
 
-    # ✅ Step 5: Send welcome only once (not for Try Again or Home)
+    # Step 6: welcome
+    first_name = "Buddy"
     welcome = (
         f"👋 Hello {first_name}!\n"
         "Welcome to *Our Number Info Bot!* 🤖\n\n"
@@ -1030,6 +1022,7 @@ def handle_start(chat_id: int, user_id: int) -> None:
         "📘 बोट का उपयोग करने के लिए *📱 Number Info* दबाएं या /help लिखें।"
     )
     send_message(chat_id, welcome, parse_mode="Markdown", reply_markup=keyboard_for(user_id))
+
 
 def handle_help(chat_id: int, user_id: Optional[int] = None) -> None:
     if user_id and not check_membership_and_prompt(chat_id, user_id):
@@ -1083,6 +1076,16 @@ def handle_balance(chat_id: int, user_id: int):
 
 
 
+def handle_home(chat_id: int, user_id: int):
+    if not check_membership_and_prompt(chat_id, user_id):
+        return
+    pts = db_get_points(user_id)
+    msg = (
+        "🏠 *Home*\n"
+        f"💰 Points: *{pts}*\n\n"
+        "Use the buttons below."
+    )
+    send_message(chat_id, msg, parse_mode="Markdown", reply_markup=keyboard_for(user_id))
 
 
 def handle_add_points_start(chat_id: int, user_id: int):
