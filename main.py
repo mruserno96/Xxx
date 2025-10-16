@@ -44,7 +44,6 @@ import logging
 import threading
 import time
 import razorpay
-import cashfree_pg
 
 from datetime import datetime, timezone, date
 from typing import Dict, Any, Optional, List, Tuple
@@ -91,7 +90,7 @@ CASHFREE_ENV = os.getenv("CASHFREE_ENV", "TEST")
 CASHFREE_WEBHOOK_SECRET = os.getenv("CASHFREE_WEBHOOK_SECRET", "")
 
 if CASHFREE_CLIENT_ID and CASHFREE_CLIENT_SECRET:
-cashfree = Cashfree(CASHFREE_CLIENT_ID, CASHFREE_CLIENT_SECRET, env=CASHFREE_ENV)
+    cashfree = Cashfree(CASHFREE_CLIENT_ID, CASHFREE_CLIENT_SECRET, env=CASHFREE_ENV)
 else:
     cashfree = None
 
