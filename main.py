@@ -738,7 +738,7 @@ def webhook() -> Any:
                          reply_markup=keyboard_for(user_id))
         return jsonify(ok=True)
 
-    # ----- Handle callback queries -----
+      # ----- Handle callback queries -----
     if "callback_query" in update:
         cb = update["callback_query"]
         data = cb.get("data", "")
@@ -782,13 +782,15 @@ def webhook() -> Any:
                 send_message(chat_id, "⚠️ Unable to fetch referral data.")
             return jsonify(ok=True)
 
-        # ✅ Moved inside callback_query (fix)
+        # ✅ Cashfree Deposit (fixed indentation)
         elif data.startswith("deposit_"):
             amount = int(data.split("_")[1])
             points = amount // 10
+
             if not CASHFREE_API_VERSION:
                 send_message(chat_id, "⚠️ Payment system not configured.")
                 return jsonify(ok=True)
+
             try:
                 order_id = f"order_{int(time.time())}_{user_id}"
                 customer = CustomerDetails(
@@ -807,16 +809,20 @@ def webhook() -> Any:
                     customer_details=customer,
                     order_meta=order_meta,
                 )
+
                 api = Cashfree()
                 api_resp = api.PGCreateOrder(CASHFREE_API_VERSION, req, None, None)
-                data_out = getattr(api_resp, "data", {}) or {}
 
-                payment_link = data_out.get("payment_link")
-                session_id = data_out.get("payment_session_id")
-                if not payment_link and session_id:
-                    payment_link = f"https://www.cashfree.com/pg/view/sessions/{session_id}"
+                payment_link = None
+                session_id = getattr(api_resp.data, "payment_session_id", None)
+
+                if session_id:
+                    payment_link = f"https://payments.cashfree.com/order/#/{session_id}"
+
                 if not payment_link:
-                    raise RuntimeError("Cashfree did not return a payment link")
+                    log.error("Cashfree order failed: %s", api_resp)
+                    send_message(chat_id, "⚠️ Payment link not received. Try again later.")
+                    return jsonify(ok=True)
 
                 msg = (
                     f"💸 *Deposit Request Initiated!*\n\n"
@@ -827,12 +833,10 @@ def webhook() -> Any:
                 inline_buttons = {
                     "inline_keyboard": [
                         [{"text": "💳 Pay Now", "url": payment_link}],
-                        [{"text": "🔁 Refresh Status",
-                          "callback_data": f"check_cashfree_{order_id}"}],
+                        [{"text": "🔁 Refresh Status", "callback_data": f"check_cashfree_{order_id}"}],
                     ]
                 }
-                send_message(chat_id, msg, parse_mode="Markdown",
-                             reply_markup=inline_buttons)
+                send_message(chat_id, msg, parse_mode="Markdown", reply_markup=inline_buttons)
 
                 if supabase:
                     supabase.table("payments").insert({
@@ -846,7 +850,7 @@ def webhook() -> Any:
 
             except Exception as e:
                 log.exception("Cashfree order creation failed: %s", e)
-                send_message(chat_id, "⚠️ Unable to create payment.")
+                send_message(chat_id, "⚠️ Unable to create payment. Try again later.")
             return jsonify(ok=True)
 
         elif data.startswith("check_cashfree_"):
