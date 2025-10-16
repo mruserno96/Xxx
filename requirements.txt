@@ -5,5 +5,9 @@ supabase
 razorpay
 aiogram
 python-telegram-bot
-cashfree-pg
-pydantic==1.10.13
+
+Python 3.11.9
+Flask 3.0.3
+aiogram 2.25.1
+cashfree-pg 1.0.3
+pydantic 1.10.13
