@@ -48,7 +48,7 @@ import cashfree_pg
 
 from datetime import datetime, timezone, date
 from typing import Dict, Any, Optional, List, Tuple
-from cashfree_pg import CashfreePG
+from cashfree_pg.api import CashfreePG
 
 from flask import Flask, request, jsonify, abort
 import requests
