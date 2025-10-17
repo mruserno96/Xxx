@@ -139,7 +139,7 @@ def db_is_admin(user_id: int) -> bool:
     """Owner is always admin (bootstrap)."""
     if OWNER_ID and str(user_id) == str(OWNER_ID):
         return True
-    if not supabase:
+    if not sb:
         return False
     try:
         res = sb.table("users").select("is_admin").eq("id", user_id).limit(1).execute()  # type: ignore
@@ -319,7 +319,7 @@ def db_all_user_ids() -> List[int]:
 
 def db_set_session(user_id: int, action: Optional[str] = None, payload: Optional[Dict[str, Any]] = None) -> None:
     """Store pending action for admin/user (e.g., broadcast, add_admin, remove_admin, await_number)."""
-    if not supabase:
+    if not sb:
         return
     try:
         sb.table("sessions").upsert({
@@ -440,7 +440,7 @@ def version() -> Any:
         version="1.1.0",
         webhook_url=WEBHOOK_URL,
         webhook_secret=WEBHOOK_SECRET[:4] + "***" if WEBHOOK_SECRET else "",
-        supabase=bool(supabase),
+        sb=bool(sb),
     )
 
 
