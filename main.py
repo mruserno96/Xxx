@@ -48,7 +48,6 @@ import cashfree_pg
 
 from datetime import datetime, timezone, date
 from typing import Dict, Any, Optional, List, Tuple
-from cashfree_pg import CashfreePG
 
 from flask import Flask, request, jsonify, abort
 import requests
@@ -85,16 +84,9 @@ if not TOKEN:
 
 
 
-CASHFREE_CLIENT_ID = os.getenv("CASHFREE_CLIENT_ID", "")
-CASHFREE_CLIENT_SECRET = os.getenv("CASHFREE_CLIENT_SECRET", "")
-CASHFREE_ENV = os.getenv("CASHFREE_ENV", "TEST")
-CASHFREE_WEBHOOK_SECRET = os.getenv("CASHFREE_WEBHOOK_SECRET", "")
-
-if CASHFREE_CLIENT_ID and CASHFREE_CLIENT_SECRET:
-    cashfree = CashfreePG(CASHFREE_CLIENT_ID, CASHFREE_CLIENT_SECRET, env=CASHFREE_ENV)
-else:
-    cashfree = None
-
+KUKUPAY_API_KEY = os.getenv("KUKUPAY_API_KEY", "").strip()
+KUKUPAY_RETURN_URL = os.getenv("KUKUPAY_RETURN_URL", (f"https://t.me/{BOT_USERNAME}" if BOT_USERNAME else SELF_URL)).strip()
+KUKUPAY_WEBHOOK_SECRET = os.getenv("KUKUPAY_WEBHOOK_SECRET", "").strip()
 
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "default-secret").strip()
 TELEGRAM_API = f"https://api.telegram.org/bot{TOKEN}"
@@ -811,6 +803,55 @@ def webhook() -> Any:
             answer_callback(callback_id, text="Balance updated!", show_alert=False)
             send_message(chat_id, msg, parse_mode="Markdown", reply_markup=keyboard_for(user_id))
             return jsonify(ok=True)
+        elif data.startswith("kukupay_create_"):
+            amount = int(data.split("_")[-1])
+            order_id = f"KUKU-{user_id}-{int(time.time())}"
+
+            payload = {
+                "api_key": KUKUPAY_API_KEY,
+                "amount": amount,
+                "phone": str(user_id),  # optional: replace with actual user phone if stored
+                "webhook_url": f"{SELF_URL}/kukupay_webhook",
+                "return_url": f"{KUKUPAY_RETURN_URL}?start={order_id}",
+                "order_id": order_id
+            }
+
+            headers = {"Content-Type": "application/json"}
+            try:
+                r = session.post("https://kukupay.pro/pay/create", json=payload, headers=headers, timeout=15)
+                r.raise_for_status()
+                res = r.json()
+                if res.get("status") == 200:
+                    payment_url = res.get("payment_url")
+                    send_message(
+                        chat_id,
+                        f"✅ Payment link generated!\n\n💰 Amount: ₹{amount}\n📎 Tap below to complete your payment 👇",
+                        parse_mode="Markdown",
+                        reply_markup={
+                            "inline_keyboard": [
+                                [{"text": "💳 Pay Now (KukuPay)", "url": payment_url}],
+                                [{"text": "🔁 Refresh Payment Status", "callback_data": f"check_kukupay_{order_id}"}]
+                            ]
+                        },
+                    )
+
+                    if supabase:
+                        supabase.table("payments").insert({
+                            "user_id": user_id,
+                            "chat_id": chat_id,
+                            "order_id": order_id,
+                            "amount": amount,
+                            "gateway": "kukupay",
+                            "status": "created"
+                        }).execute()
+
+                else:
+                    send_message(chat_id, "⚠️ Failed to create payment link. Try again later.")
+            except Exception as e:
+                log.exception("KukuPay create failed: %s", e)
+                send_message(chat_id, "⚠️ Unable to connect to KukuPay. Try again later.")
+
+            return jsonify(ok=True)
 
 
         elif data.startswith("copy_link_"):
@@ -1104,7 +1145,7 @@ def handle_stats(chat_id: int, user_id: int) -> None:
 
 
 def handle_deposit(chat_id: int, user_id: int):
-    """Show deposit options and generate Razorpay link."""
+    """Show deposit options and generate KukuPay link."""
     amounts = [
         {"label": "₹10 → +1 Point", "value": 10},
         {"label": "₹50 → +5 Points", "value": 50},
@@ -1112,15 +1153,14 @@ def handle_deposit(chat_id: int, user_id: int):
         {"label": "₹200 → +20 Points", "value": 200},
     ]
     buttons = [
-        [{"text": a["label"], "callback_data": f"deposit_{a['value']}"}] for a in amounts
+        [{"text": f"💳 Pay {a['label']} (KukuPay)", "callback_data": f"kukupay_create_{a['value']}"}] for a in amounts
     ]
     send_message(
         chat_id,
-        "💳 *Deposit Points*\n\nSelect an amount to add points:",
+        "💳 *Deposit Points via KukuPay*\n\nSelect an amount to add points:",
         parse_mode="Markdown",
         reply_markup={"inline_keyboard": buttons},
     )
-
 
 def handle_list_admins(chat_id: int, user_id: int) -> None:
     if role_for(user_id) != "owner":
@@ -1445,7 +1485,35 @@ def cashfree_webhook():
     return jsonify(ok=True)
 
 
+@app.route("/kukupay_webhook", methods=["POST"])
+def kukupay_webhook():
+    data = request.get_json(force=True)
+    log.info("🔔 KukuPay webhook received: %s", data)
 
+    order_id = data.get("order_id")
+    status = data.get("status", "").lower()
+    amount = float(data.get("amount", 0))
+
+    if supabase:
+        res = supabase.table("payments").select("user_id, chat_id").eq("order_id", order_id).limit(1).execute()
+        if res.data:
+            user_id = res.data[0]["user_id"]
+            chat_id = res.data[0]["chat_id"]
+        else:
+            user_id, chat_id = None, None
+    else:
+        user_id, chat_id = None, None
+
+    if status == "paid":
+        points = int(amount) // 10
+        db_add_points(user_id, points)
+        send_message(chat_id, f"✅ KukuPay payment confirmed!\n💰 ₹{amount} = +{points} points added.", parse_mode="Markdown")
+        if supabase:
+            supabase.table("payments").update({"status": "paid"}).eq("order_id", order_id).execute()
+    else:
+        log.warning("KukuPay unrecognized status: %s", status)
+
+    return jsonify(ok=True)
 
 
 
