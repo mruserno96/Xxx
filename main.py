@@ -31,15 +31,18 @@ from requests.adapters import HTTPAdapter, Retry
 # ---------------------------------------------------------------------
 
 # --- Patch ForwardRef._evaluate() (Python 3.12 + Pydantic 1.x) ---
+# --- Patch ForwardRef._evaluate() (Python 3.12 + Pydantic 1.x) ---
 if hasattr(typing.ForwardRef, "_evaluate"):
     _orig_eval = typing.ForwardRef._evaluate
+
     def _patched_evaluate(self, globalns=None, localns=None, recursive_guard=None):
         try:
-            # Try full signature (Python 3.12+)
+            # ✅ Call using keyword arg to avoid double-value error
             return _orig_eval(self, globalns, localns, recursive_guard=recursive_guard)
         except TypeError:
-            # Older call (Python <3.12)
+            # ✅ Fallback for Python <3.12
             return _orig_eval(self, globalns, localns)
+
     typing.ForwardRef._evaluate = _patched_evaluate
 
 # --- Patch duplicate Pydantic validator bug (PostgREST conflict) ---
