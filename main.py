@@ -46,6 +46,7 @@ import time
 import razorpay
 import cashfree_pg
 import base64
+import typing
 
 from datetime import datetime, timezone, date
 from typing import Dict, Any, Optional, List, Tuple
@@ -55,6 +56,23 @@ import requests
 from requests.adapters import HTTPAdapter, Retry
 
 # ----- Supabase -----
+
+
+# 🧩 --- Fix for ForwardRef._evaluate() bug (Supabase + Pydantic 1.x) ---
+if hasattr(typing.ForwardRef, "_evaluate"):
+    # Monkey-patch the missing keyword argument to make gotrue work
+    orig_eval = typing.ForwardRef._evaluate
+
+    def _evaluate_patched(self, globalns=None, localns=None, recursive_guard=None):
+        try:
+            # Old-style call (Pydantic 1.x compatible)
+            return orig_eval(self, globalns, localns)
+        except TypeError:
+            # Some environments still require the third arg
+            return orig_eval(self, globalns, localns)
+
+    typing.ForwardRef._evaluate = _evaluate_patched
+
 try:
     from supabase import create_client, Client  # type: ignore
 except Exception:  # pragma: no cover
