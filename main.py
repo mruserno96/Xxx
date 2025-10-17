@@ -58,22 +58,18 @@ from requests.adapters import HTTPAdapter, Retry
 
 # ----- Supabase -----
 
-# 🧩 Patch duplicate validator bug in postgrest / pydantic
-if hasattr(pydantic.class_validators, "_prepare_validator"):
-    from pydantic import ConfigError
+# 🧩 Patch ForwardRef._evaluate() bug (Python 3.12 + Pydantic 1.x)
+if hasattr(typing, "ForwardRef") and hasattr(typing.ForwardRef, "_evaluate"):
+    _orig_eval = typing.ForwardRef._evaluate
 
-    orig_pv = pydantic.class_validators._prepare_validator
-
-    def safe_prepare_validator(func, allow_reuse):
+    def _patched_evaluate(self, globalns=None, localns=None, recursive_guard=None):
+        # tolerate missing keyword in old signature
         try:
-            return orig_pv(func, allow_reuse)
-        except ConfigError as e:
-            if "duplicate validator function" in str(e):
-                # Ignore harmless duplicate validator registrations
-                return func
-            raise
+            return _orig_eval(self, globalns, localns)
+        except TypeError:
+            return _orig_eval(self, globalns, localns)
 
-    pydantic.class_validators._prepare_validator = safe_prepare_validator
+    typing.ForwardRef._evaluate = _patched_evaluate
 try:
     from supabase import create_client, Client  # type: ignore
 except Exception:  # pragma: no cover
