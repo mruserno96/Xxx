@@ -41,12 +41,7 @@ OWNER_ID = "8356178010"
 
 # Supabase
 SUPABASE_URL = "https://lawpdwfrsdgxidbsrrcy.supabase.co"
-SUPABASE_KEY = (
-    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9."
-    "eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imxhd3Bkd2Zyc2RneGlkYnNycmN5Iiwicm9sZSI6"
-    "InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc2MDQ1MzgxOSwiZXhwIjoyMDc2MDI5ODE5fQ."
-    "BPRYZpC0oBly9YT_rMTyOHLo-9b3ZxCgUbGW1SKsRzY"
-)
+SUPABASE_KEY = ("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imxhd3Bkd2Zyc2RneGlkYnNycmN5Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc2MDQ1MzgxOSwiZXhwIjoyMDc2MDI5ODE5fQ.BPRYZpC0oBly9YT_rMTyOHLo-9b3ZxCgUbGW1SKsRzY")
 
 # Payments
 CASHFREE_CLIENT_ID = "1102192100315ab5202afbeb6a82912011"
