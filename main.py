@@ -382,7 +382,11 @@ def db_init_points_if_new(user_id: int, referred_by: Optional[int] = None) -> No
 
 
 
-
+def _progress_bar(points: int, total: int = 100) -> str:
+    """10-slot bar, scales to 'total' (default 100)."""
+    pct = min(max(points, 0), total) / total
+    filled_slots = int(round(pct * 10))
+    return "▰" * filled_slots + "▱" * (10 - filled_slots)
 
 
 
@@ -826,6 +830,32 @@ def webhook() -> Any:
             return jsonify(ok=True)
 
 
+
+        elif data == "home_num":
+            # Open the number entry flow
+            handle_numberinfo(chat_id, user_id)
+            return jsonify(ok=True)
+
+        elif data == "home_balance":
+            handle_balance(chat_id, user_id)
+            return jsonify(ok=True)
+
+        elif data == "home_refer":
+            handle_refer(chat_id, user_id)
+            return jsonify(ok=True)
+
+        elif data == "home_deposit":
+            handle_deposit(chat_id, user_id)
+            return jsonify(ok=True)
+
+        elif data == "home_help":
+            handle_help(chat_id, user_id)
+            return jsonify(ok=True)
+
+
+
+
+
         elif data.startswith("copy_link_"):
             answer_callback(callback_id, text="✅ Link copied! Share it with your friends.", show_alert=True)
 
@@ -1041,19 +1071,43 @@ def handle_start(chat_id: int, user_id: int) -> None:
 def handle_help(chat_id: int, user_id: Optional[int] = None) -> None:
     if user_id and not check_membership_and_prompt(chat_id, user_id):
         return
+
+    bot_username = "OfficialBlackEyeBot"  # 🟢 your bot username
+    owner_contact = "@GodAlexMM"          # 🟢 your Telegram handle
+
     help_text = (
-        "📘 *How To Use This Bot* / 📘 *बोट का उपयोग कैसे करें*\n\n"
-        "➡️ Tap *📱 Number Info* and then send a 10-digit number.\n"
-        "➡️ Or use the command:\n"
-        "`/num <10-digit-number>`\n"
-        "💡 *Example / उदाहरण:* `/num 9235895648`\n\n"
-        "📌 *Rules / नियम:*\n"
-        "• Only 10-digit Indian numbers accepted (without +91).\n"
-        "• केवल 10 अंकों वाले भारतीय नंबर स्वीकार किए जाएंगे (बिना +91 के)।\n"
-        "• If you enter letters or not 10 digits, it will be rejected.\n"
-        "• यदि आप 10 अंकों से अलग या अक्षर दर्ज करते हैं, तो यह अस्वीकार हो जाएगा।\n"
+        "📘 <b>Help & Commands</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "🤖 <b>Quick Guide:</b>\n"
+        "• Tap <b>📱 Number Info</b> → Send any <code>10-digit</code> Indian number.\n"
+        "• Each search costs <b>1 point</b>.\n"
+        "• Earn <b>+2 points</b> per referral via <b>🎁 Refer</b>.\n"
+        "• Add more points with <b>💳 Deposit</b>.\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "📞 <b>Need Help?</b>\n"
+        f"Contact: {owner_contact}\n"
+        f"Bot: <a href='https://t.me/{bot_username}'>@{bot_username}</a>\n\n"
+        "❤️ <i>Developed by God Alex — stay awesome!</i>\n"
+        "🌐 <i>Fast • Secure • Reliable</i>"
     )
-    send_message(chat_id, help_text, parse_mode="Markdown", reply_markup=keyboard_for(user_id or 0))
+
+    inline_buttons = {
+        "inline_keyboard": [
+            [
+                {"text": "📱 Try Number Info", "callback_data": "home_num"},
+                {"text": "💰 Check Balance", "callback_data": "home_balance"},
+            ],
+            [
+                {"text": "🎁 Refer Now", "callback_data": "home_refer"},
+                {"text": "💳 Deposit Points", "callback_data": "home_deposit"},
+            ],
+            [
+                {"text": "🏠 Back to Home", "callback_data": "try_again"}
+            ]
+        ]
+    }
+
+    send_message(chat_id, help_text, parse_mode="HTML", reply_markup=inline_buttons)
 
 def handle_balance(chat_id: int, user_id: int):
     """Show fancy balance screen with progress bar and referral info."""
@@ -1090,17 +1144,58 @@ def handle_balance(chat_id: int, user_id: int):
 
 
 
+
 def handle_home(chat_id: int, user_id: int):
     if not check_membership_and_prompt(chat_id, user_id):
         return
-    pts = db_get_points(user_id)
-    msg = (
-        "🏠 *Home*\n"
-        f"💰 Points: *{pts}*\n\n"
-        "Use the buttons below."
-    )
-    send_message(chat_id, msg, parse_mode="Markdown", reply_markup=keyboard_for(user_id))
 
+    pts = db_get_points(user_id)
+    # You can treat 'total' as a soft milestone to visualize progress
+    milestone = 100  # change to 20/50/100 if you prefer a different target
+    bar = _progress_bar(pts, milestone)
+
+    # Small dynamic tip (rotates by simple modulo)
+    tips = [
+        "💡 Tip: Tap <b>📱 Number Info</b> to start a fresh lookup.",
+        "💡 Tip: Earn <b>+2 points</b> per referral via <b>🎁 Refer</b>.",
+        "💡 Tip: Each search costs <b>1 point</b> — keep an eye on balance!",
+        "💡 Tip: Use <b>🔁 Refresh</b> to update your points instantly.",
+    ]
+    tip = tips[pts % len(tips)]
+
+    # Clean, bilingual, HTML-styled card
+    msg = (
+        "🏠 <b>Home</b>\n"
+        f"———————————————\n"
+        f"💰 <b>Points:</b> <code>{pts}</code>\n"
+        f"🏁 <b>Progress:</b> {bar}  <i>{min(pts, milestone)}/{milestone}</i>\n"
+        f"🔎 <b>Searches Left:</b> <code>{pts}</code>\n"
+        "———————————————\n"
+        f"{tip}\n\n"
+        "🇮🇳 <b>हिंदी:</b> <i>पॉइंट्स बढ़ाने के लिए रेफ़रल करें या डिपॉज़िट करें।</i>\n"
+        "🇬🇧 <b>English:</b> <i>Use Refer or Deposit to boost your balance.</i>"
+    )
+
+    # Inline quick actions (callbacks handled below)
+    inline = {
+        "inline_keyboard": [
+            [
+                {"text": "📱 Number Info", "callback_data": "home_num"},
+                {"text": "💰 Balance", "callback_data": "home_balance"},
+            ],
+            [
+                {"text": "🎁 Refer", "callback_data": "home_refer"},
+                {"text": "💳 Deposit", "callback_data": "home_deposit"},
+            ],
+            [
+                {"text": "ℹ️ Help", "callback_data": "home_help"},
+                {"text": "🔁 Refresh", "callback_data": "balance_refresh"},
+            ],
+        ]
+    }
+
+    # Send as HTML (keeps monospace/strong/italics crisp)
+    send_message(chat_id, msg, parse_mode="HTML", reply_markup=inline)
 
 def handle_add_points_start(chat_id: int, user_id: int):
     if role_for(user_id) != "owner":
@@ -1262,19 +1357,33 @@ def handle_broadcast(chat_id: int, user_id: int) -> None:
 
 
 def handle_numberinfo(chat_id: int, user_id: int) -> None:
-    """NEW: Prompt user to enter a 10-digit number (bilingual), store session."""
+    """Elegant bilingual prompt for number lookup."""
     if not check_membership_and_prompt(chat_id, user_id):
         return
+
     db_set_session(user_id, "await_number")
-    send_message(
-        chat_id,
-        "🧮 Please enter a *10-digit Indian phone number* without +91.\n"
-        "✅ Example: `9235895648`\n\n"
-        "🧮 कृपया *+91 के बिना 10 अंकों का भारतीय मोबाइल नंबर* भेजें।\n"
-        "✅ उदाहरण: `9235895648`",
-        parse_mode="Markdown",
-        reply_markup=keyboard_for(user_id),
+
+    msg = (
+        "📱 <b>Number Info Lookup</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "🧮 <b>Enter any 10-digit Indian mobile number</b> (without +91).\n"
+        "💡 Example: <code>9235895648</code>\n\n"
+        "🇮🇳 <b>हिंदी:</b> कृपया <b>+91 के बिना</b> कोई भी <b>10 अंकों का मोबाइल नंबर</b> भेजें।\n"
+        "💡 उदाहरण: <code>9235895648</code>\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "🔎 <i>We’ll fetch detailed info instantly once you send the number.</i>"
     )
+
+    inline_buttons = {
+        "inline_keyboard": [
+            [
+                {"text": "🏠 Back to Home", "callback_data": "try_again"},
+                {"text": "ℹ️ Help", "callback_data": "home_help"}
+            ]
+        ]
+    }
+
+    send_message(chat_id, msg, parse_mode="HTML", reply_markup=inline_buttons)
 
 def handle_payments(chat_id: int, user_id: int):
     if not sb:
