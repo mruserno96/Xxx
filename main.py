@@ -47,6 +47,7 @@ import razorpay
 import cashfree_pg
 import base64
 import typing
+import pydantic
 
 from datetime import datetime, timezone, date
 from typing import Dict, Any, Optional, List, Tuple
@@ -57,22 +58,22 @@ from requests.adapters import HTTPAdapter, Retry
 
 # ----- Supabase -----
 
+# 🧩 Patch duplicate validator bug in postgrest / pydantic
+if hasattr(pydantic.class_validators, "_prepare_validator"):
+    from pydantic import ConfigError
 
-# 🧩 --- Fix for ForwardRef._evaluate() bug (Supabase + Pydantic 1.x) ---
-if hasattr(typing.ForwardRef, "_evaluate"):
-    # Monkey-patch the missing keyword argument to make gotrue work
-    orig_eval = typing.ForwardRef._evaluate
+    orig_pv = pydantic.class_validators._prepare_validator
 
-    def _evaluate_patched(self, globalns=None, localns=None, recursive_guard=None):
+    def safe_prepare_validator(func, allow_reuse):
         try:
-            # Old-style call (Pydantic 1.x compatible)
-            return orig_eval(self, globalns, localns)
-        except TypeError:
-            # Some environments still require the third arg
-            return orig_eval(self, globalns, localns)
+            return orig_pv(func, allow_reuse)
+        except ConfigError as e:
+            if "duplicate validator function" in str(e):
+                # Ignore harmless duplicate validator registrations
+                return func
+            raise
 
-    typing.ForwardRef._evaluate = _evaluate_patched
-
+    pydantic.class_validators._prepare_validator = safe_prepare_validator
 try:
     from supabase import create_client, Client  # type: ignore
 except Exception:  # pragma: no cover
