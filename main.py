@@ -81,15 +81,8 @@ if not TOKEN:
 
 
 
-CASHFREE_CLIENT_ID = os.getenv("CASHFREE_CLIENT_ID", "")
-CASHFREE_CLIENT_SECRET = os.getenv("CASHFREE_CLIENT_SECRET", "")
-CASHFREE_ENV = os.getenv("CASHFREE_ENV", "TEST")
-CASHFREE_WEBHOOK_SECRET = os.getenv("CASHFREE_WEBHOOK_SECRET", "")
 
-if CASHFREE_CLIENT_ID and CASHFREE_CLIENT_SECRET:
-    cashfree = CashfreePG(CASHFREE_CLIENT_ID, CASHFREE_CLIENT_SECRET, env=CASHFREE_ENV)
-else:
-    cashfree = None
+
 
 
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "default-secret").strip()
@@ -1392,50 +1385,6 @@ if os.getenv("DISABLE_PING", "").strip() not in ("1", "true", "True"):
 else:
     log.info("Keepalive ping thread disabled by env.")
 
-
-
-
-# ---------------------------------------------------------------------
-# Razorpay Webhook — auto-credit points + status notification
-# ---------------------------------------------------------------------
-@app.route("/cashfree_webhook", methods=["POST"])
-def cashfree_webhook():
-    import hmac, hashlib
-
-    payload = request.data.decode("utf-8")
-    signature = request.headers.get("x-webhook-signature", "")
-    expected_sig = hmac.new(
-        bytes(CASHFREE_WEBHOOK_SECRET, "utf-8"),
-        msg=bytes(payload, "utf-8"),
-        digestmod=hashlib.sha256,
-    ).hexdigest()
-
-    if not hmac.compare_digest(signature, expected_sig):
-        log.warning("Invalid Cashfree webhook signature.")
-        return abort(400)
-
-    data = request.get_json()
-    event = data.get("event")
-    order_id = data.get("data", {}).get("order", {}).get("order_id")
-    status = data.get("data", {}).get("order", {}).get("order_status")
-
-    # lookup DB
-    if sb:
-        res = sb.table("payments").select("user_id, chat_id").eq("order_id", order_id).limit(1).execute()
-        if res.data:
-            user_id = res.data[0]["user_id"]
-            chat_id = res.data[0]["chat_id"]
-        else:
-            user_id, chat_id = None, None
-
-    if event == "ORDER_PAID" or status == "PAID":
-        points = int(data["data"]["order"]["order_amount"]) // 10
-        db_add_points(user_id, points)
-        send_message(chat_id, f"✅ Payment of ₹{data['data']['order']['order_amount']} confirmed! +{points} points added.", parse_mode="Markdown")
-        if sb:
-            sb.table("payments").update({"status": "paid"}).eq("order_id", order_id).execute()
-
-    return jsonify(ok=True)
 
 
 
