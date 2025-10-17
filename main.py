@@ -84,7 +84,7 @@ if not TOKEN:
 
 
 KUKUPAY_API_KEY = os.getenv("KUKUPAY_API_KEY", "axMSq3oSEEhrYvWNjXeCavGQisdxaY1U")
-KUKUPAY_WEBHOOK_URL = os.getenv("KUKUPAY_WEBHOOK_URL", f"{SELF_URL}/kukupay_webhook")
+KUKUPAY_WEBHOOK_URL = os.getenv("KUKUPAY_WEBHOOK_URL", "").strip()
 KUKUPAY_RETURN_URL = os.getenv("KUKUPAY_RETURN_URL", "https://t.me/YourBotUsername")
 
 
