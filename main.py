@@ -441,27 +441,25 @@ def db_all_user_ids() -> List[int]:
 
 
 def db_set_session(user_id: int, action: Optional[str] = None, payload: Optional[Dict[str, Any]] = None) -> None:
-    """Store pending action for admin/user (e.g., broadcast, add_admin, remove_admin, await_number)."""
     if not supabase:
         return
     try:
         supabase.table("sessions").upsert({
-            "user_id": user_id,
+            "user_id": int(user_id),
             "action": action,
             "payload": json.dumps(payload or {})
-        }).execute()  # type: ignore
+        }).execute()
+        log.debug("session set: %s -> %s", user_id, action)
     except Exception as e:
         log.exception("db_set_session failed: %s", e)
-
 
 def db_get_session(user_id: int) -> Optional[Dict[str, Any]]:
     if not supabase:
         return None
     try:
-        res = supabase.table("sessions").select("*").eq("user_id", user_id).limit(1).execute()  # type: ignore
-        if res.data:  # type: ignore
-            row = res.data[0]  # type: ignore
-            payload = {}
+        res = supabase.table("sessions").select("*").eq("user_id", int(user_id)).limit(1).execute()
+        if res.data:
+            row = res.data[0]
             try:
                 payload = json.loads(row.get("payload") or "{}")
             except Exception:
@@ -472,12 +470,11 @@ def db_get_session(user_id: int) -> Optional[Dict[str, Any]]:
         log.exception("db_get_session failed: %s", e)
         return None
 
-
 def db_clear_session(user_id: int) -> None:
     if not supabase:
         return
     try:
-        supabase.table("sessions").delete().eq("user_id", user_id).execute()  # type: ignore
+        supabase.table("sessions").delete().eq("user_id", int(user_id)).execute()
     except Exception as e:
         log.exception("db_clear_session failed: %s", e)
 
@@ -1055,6 +1052,9 @@ def handle_balance(chat_id: int, user_id: int):
 
 
 def handle_home(chat_id: int, user_id: int):
+    # Ensure points row exists (idempotent insert)
+    db_init_points_if_new(user_id, referred_by=None)
+
     if not check_membership_and_prompt(chat_id, user_id):
         return
     pts = db_get_points(user_id)
@@ -1064,6 +1064,7 @@ def handle_home(chat_id: int, user_id: int):
         "Use the buttons below."
     )
     send_message(chat_id, msg, parse_mode="Markdown", reply_markup=keyboard_for(user_id))
+
 
 
 def handle_add_points_start(chat_id: int, user_id: int):
