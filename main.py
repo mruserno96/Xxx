@@ -80,9 +80,11 @@ print("DEBUG_SUPABASE_KEY =", SUPABASE_KEY[:10] + "...")
 
 supabase: Optional[Client] = None
 try:
-   supabase: Client = supabase.create_client(SUPABASE_URL, SUPABASE_KEY)
-print("✅ Supabase initialized successfully!")
+    from supabase import create_client, Client
+    sb: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+    print("✅ Supabase initialized successfully!")
 except Exception as e:
+    sb = None
     log.exception("❌ Supabase init failed: %s", e)
 # ---------------------------------------------------------------------
 # Telegram API
