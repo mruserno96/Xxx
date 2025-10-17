@@ -31,34 +31,6 @@ from requests.adapters import HTTPAdapter, Retry
 # ---------------------------------------------------------------------
 
 # --- Patch ForwardRef._evaluate() (Python 3.12 + Pydantic 1.x) ---
-# --- Patch ForwardRef._evaluate() (Python 3.12 + Pydantic 1.x) ---
-if hasattr(typing.ForwardRef, "_evaluate"):
-    print("✅ Using NEW ForwardRef patch v2.1")
-    _orig_eval = typing.ForwardRef._evaluate
-
-    def _patched_evaluate(self, globalns=None, localns=None, recursive_guard=None):
-        try:
-            return _orig_eval(self, globalns, localns, recursive_guard=recursive_guard)
-        except TypeError:
-            return _orig_eval(self, globalns, localns)
-
-    typing.ForwardRef._evaluate = _patched_evaluate
-
-# --- Patch duplicate Pydantic validator bug (PostgREST conflict) ---
-import pydantic.class_validators as class_validators
-import pydantic.errors as pydantic_errors
-_orig_prepare_validator = class_validators._prepare_validator
-
-def _safe_prepare_validator(f, allow_reuse=False):
-    try:
-        return _orig_prepare_validator(f, allow_reuse)
-    except pydantic_errors.ConfigError as e:
-        if "duplicate validator function" in str(e):
-            # Ignore harmless duplicate validator definitions
-            return _orig_prepare_validator(f, allow_reuse=True)
-        raise
-
-class_validators._prepare_validator = _safe_prepare_validator
 
 # ---------------------------------------------------------------------
 # 🧠 Supabase Import — Safe and Wrapped
@@ -115,34 +87,28 @@ CHANNEL2_CHAT = os.getenv("CHANNEL2_CHAT_ID_OR_USERNAME", "").strip()
 OWNER_ID = os.getenv("OWNER_ID", "").strip()
 
 # ---------------------------------------------------------------------
-def clean_env_var(v: str) -> str:
-    """Strip and sanitize env vars (remove escaped newlines)."""
-    return v.replace("\\n", "").replace("\n", "").strip() if v else ""
-
-SUPABASE_URL = clean_env_var(os.getenv("SUPABASE_URL", ""))
-SUPABASE_KEY = clean_env_var(
+SUPABASE_URL = os.getenv("SUPABASE_URL", "").strip()
+SUPABASE_KEY = (
     os.getenv("SUPABASE_SERVICE_ROLE", os.getenv("SUPABASE_ANON_KEY", ""))
-)
+).strip()
 
 log.info(f"🔍 ENV CHECK: SUPABASE_URL = {SUPABASE_URL}")
-log.info(
-    f"🔍 ENV CHECK: SUPABASE_KEY (first 8 chars) = {SUPABASE_KEY[:8]}***"
-    if SUPABASE_KEY else "🔍 ENV CHECK: SUPABASE_KEY = EMPTY"
-)
+if SUPABASE_KEY:
+    log.info(f"🔍 ENV CHECK: SUPABASE_KEY (first 8 chars) = {SUPABASE_KEY[:8]}***")
+else:
+    log.warning("⚠️ No SUPABASE_KEY provided — check Render dashboard.")
 
-# ---------------------------------------------------------------------
-# Safe Supabase initialization
-# ---------------------------------------------------------------------
-supabase = None
+supabase: Client | None = None
 try:
-    if SUPABASE_URL and SUPABASE_KEY and create_client:
+    if SUPABASE_URL and SUPABASE_KEY:
         supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
-        _ = supabase.table("users").select("id").limit(1).execute()
-        log.info("✅ Supabase client initialized and verified successfully.")
+        # ✅ test query to confirm connectivity
+        supabase.table("users").select("id").limit(1).execute()
+        log.info("✅ Supabase connected successfully.")
     else:
-        log.warning("⚠️ Missing Supabase env vars — please check Render dashboard.")
+        log.warning("⚠️ Missing Supabase env vars — skipping connection.")
 except Exception as e:
-    log.exception("❌ Supabase initialization failed: %s", e)
+    log.exception(f"❌ Supabase init failed: {e}")
     supabase = None
 
 # Requests / Telegram session with retries
