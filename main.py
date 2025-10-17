@@ -800,6 +800,8 @@ def webhook() -> Any:
 
 
     # ----- Handle callback queries -----
+
+    # --- Generic callbacks
     if "callback_query" in update:
         cb = update["callback_query"]
         data = cb.get("data", "")
@@ -807,15 +809,11 @@ def webhook() -> Any:
         callback_id = cb["id"]
         chat_id = cb.get("message", {}).get("chat", {}).get("id")
 
-    
+        # --- Generic callbacks ---
         if data == "try_again":
             answer_callback(callback_id, text="Rechecking your join status...")
             if check_membership_and_prompt(chat_id, user_id):
-                # ✅ If user has joined, just open Home panel instead of spamming /start
                 handle_home(chat_id, user_id)
-            else:
-                # Will already have shown join prompt inside check_membership
-                pass
             return jsonify(ok=True)
 
         elif data == "balance_refresh":
@@ -829,10 +827,7 @@ def webhook() -> Any:
             send_message(chat_id, msg, parse_mode="Markdown", reply_markup=keyboard_for(user_id))
             return jsonify(ok=True)
 
-
-
         elif data == "home_num":
-            # Open the number entry flow
             handle_numberinfo(chat_id, user_id)
             return jsonify(ok=True)
 
@@ -852,12 +847,10 @@ def webhook() -> Any:
             handle_help(chat_id, user_id)
             return jsonify(ok=True)
 
-
-
-
-
+        # --- Referral related ---
         elif data.startswith("copy_link_"):
             answer_callback(callback_id, text="✅ Link copied! Share it with your friends.", show_alert=True)
+            return jsonify(ok=True)
 
         elif data.startswith("my_refs_"):
             try:
@@ -866,13 +859,12 @@ def webhook() -> Any:
                 total = len(refs)
                 completed = len([r for r in refs if r.get("status") in ("joined", "completed")])
                 pending = total - completed
-
                 msg = (
                     f"🎯 *My Referrals*\n\n"
                     f"👥 Total Invited: *{total}*\n"
                     f"✅ Joined: *{completed}*\n"
                     f"🕓 Pending: *{pending}*\n\n"
-                    f"💰 You’ve earned approximately *{completed * 2} points* from referrals!"
+                    f"💰 Earned approx: *{completed * 2} points!*"
                 )
                 send_message(chat_id, msg, parse_mode="Markdown", reply_markup=keyboard_for(user_id))
             except Exception as e:
@@ -880,10 +872,11 @@ def webhook() -> Any:
                 send_message(chat_id, "⚠️ Unable to fetch referral data. Try again later.")
             return jsonify(ok=True)
 
+        # --- 💳 KukuPay Payment Creation ---
         elif data.startswith("kukupay_"):
             amount = int(data.split("_")[1])
             order_id = f"ORD-{user_id}-{int(time.time())}"
-            phone = "9999999999"  # ⚠️ Replace with user's real phone if available
+            phone = "9999999999"  # optional; can later map from user profile
 
             payload = {
                 "api_key": KUKUPAY_API_KEY,
@@ -896,12 +889,42 @@ def webhook() -> Any:
             headers = {"Content-Type": "application/json"}
 
             try:
-                resp = session.post("https://kukupay.pro/pay/create", json=payload, headers=headers, timeout=15)
-                data = resp.json()
-                if data.get("status") == 200:
-                    payment_url = data.get("payment_url")
-                    # save in Supabase
-                    if sb:
+                send_message(chat_id, "💳 Generating your payment link… Please wait ⏳")
+                log.info("➡️ Sending KukuPay create payload: %s", json.dumps(payload, indent=2))
+
+                resp = session.post(
+                    "https://kukupay.pro/pay/create",
+                    json=payload,
+                    headers=headers,
+                    timeout=15
+                )
+                log.info("⬅️ KukuPay raw response: %s", resp.text[:500])
+
+                # --- HTTP check ---
+                if resp.status_code != 200:
+                    send_message(chat_id, f"⚠️ Payment API returned HTTP {resp.status_code}. Try again later.")
+                    log.error("KukuPay HTTP error %s: %s", resp.status_code, resp.text)
+                    return jsonify(ok=True)
+
+                # --- Safe JSON parsing ---
+                try:
+                    data_json = resp.json()
+                except Exception as e:
+                    send_message(chat_id, "⚠️ Invalid response from payment server. Try again later.")
+                    log.exception("KukuPay invalid JSON: %s", e)
+                    return jsonify(ok=True)
+
+                # --- Check payment_url presence ---
+                if not data_json.get("payment_url"):
+                    send_message(chat_id, "⚠️ Failed to create payment link. Please retry in a minute.")
+                    log.warning("KukuPay response missing payment_url: %s", data_json)
+                    return jsonify(ok=True)
+
+                payment_url = data_json["payment_url"]
+
+                # --- Save transaction ---
+                if sb:
+                    try:
                         sb.table("payments").insert({
                             "user_id": user_id,
                             "chat_id": chat_id,
@@ -911,31 +934,30 @@ def webhook() -> Any:
                             "status": "pending",
                             "created_at": datetime.now(timezone.utc).isoformat()
                         }).execute()
-                    send_message(
-                        chat_id,
-                        f"💳 *Payment Link Generated!*\n\n"
-                        f"Amount: ₹{amount}\n"
-                        f"Points: +{amount // 10}\n\n"
-                        "👇 Tap below to complete your payment:",
-                        parse_mode="Markdown",
-                        reply_markup={"inline_keyboard": [[{"text": "💸 Pay Now", "url": payment_url}]]}
-                    )
-                else:
-                    send_message(chat_id, "⚠️ Failed to create payment link. Try again later.")
+                    except Exception as e:
+                        log.warning("Failed to insert payment record: %s", e)
+
+                # --- Send user link ---
+                send_message(
+                    chat_id,
+                    f"✅ *Payment Link Created!*\n\n💰 Amount: ₹{amount}\n🎯 Points: +{amount // 10}\n\n"
+                    "👇 Tap below to complete your payment:",
+                    parse_mode="Markdown",
+                    reply_markup={"inline_keyboard": [[{"text": "💸 Pay Now", "url": payment_url}]]}
+                )
+
+            except requests.exceptions.Timeout:
+                send_message(chat_id, "⚠️ Payment server timeout. Please try again later.")
+                log.warning("KukuPay timeout while creating payment link.")
+            except requests.exceptions.ConnectionError:
+                send_message(chat_id, "⚠️ Could not connect to payment server. Try again.")
+                log.warning("KukuPay connection error.")
             except Exception as e:
+                send_message(chat_id, "⚠️ Unexpected error creating payment link. Try again later.")
                 log.exception("KukuPay API error: %s", e)
-                send_message(chat_id, "⚠️ Payment creation failed. Try again later.")
             return jsonify(ok=True)
 
-
-
-
-
-
-
-
-
-
+        # --- Razorpay legacy handler (optional) ---
         elif data.startswith("check_payment_"):
             link_id = data.split("_", 2)[2]
             try:
@@ -948,15 +970,11 @@ def webhook() -> Any:
                 if status == "paid":
                     send_message(
                         chat_id,
-                        f"✅ *Payment Confirmed!*\n\n"
-                        f"💰 Amount: ₹{amount}\n"
-                        f"🎯 Points: +{user_points}\n\n"
-                        "Your points will reflect shortly if not already added.",
+                        f"✅ *Payment Confirmed!*\n\n💰 Amount: ₹{amount}\n🎯 Points: +{user_points}\n\n"
+                        "Your points will reflect shortly.",
                         parse_mode="Markdown",
                         reply_markup=keyboard_for(user_id)
                     )
-
-                    # Update Supabase record if exists
                     if sb:
                         try:
                             sb.table("payments").update({"status": "paid"}).eq("link_id", link_id).execute()
@@ -966,7 +984,7 @@ def webhook() -> Any:
                 elif status == "created":
                     send_message(
                         chat_id,
-                        "⏳ *Payment Pending!*\n\nPlease complete your payment using the link below 👇",
+                        "⏳ *Payment Pending!*\n\nPlease complete your payment below 👇",
                         parse_mode="Markdown",
                         reply_markup={
                             "inline_keyboard": [
@@ -978,17 +996,17 @@ def webhook() -> Any:
                 else:
                     send_message(
                         chat_id,
-                        f"⚠️ Current Status: *{status.upper()}*\nIf you already paid, please wait 1–2 minutes.",
+                        f"⚠️ Current Status: *{status.upper()}*\nIf already paid, wait a minute.",
                         parse_mode="Markdown"
                     )
             except Exception as e:
                 log.exception("Payment status check failed: %s", e)
                 send_message(chat_id, "⚠️ Unable to check payment status. Try again later.")
             return jsonify(ok=True)
+
         else:
             answer_callback(callback_id, text="OK")
             return jsonify(ok=True)
-
 
 
 # ---------------------------------------------------------------------
