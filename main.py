@@ -1040,35 +1040,40 @@ def webhook() -> Any:
         # --- Manual deposit: choose amount ---
   
 
+        # --- Manual deposit: choose amount ---
         elif data.startswith("manual_"):
             try:
                 amount = int(data.split("_", 1)[1])
             except Exception:
-             answer_callback(callback_id, "Invalid amount.", show_alert=True)
-             return jsonify(ok=True)  # only return here if invalid
+                answer_callback(callback_id, "Invalid amount.", show_alert=True)
+                return jsonify(ok=True)  # only return early if invalid
 
-    # ✅ Now this code actually runs:
-    points = amount // RUPEES_PER_POINT
+            # ₹10 = 1 point (example) → points are amount // RUPEES_PER_POINT
+            points = amount // RUPEES_PER_POINT
 
-    db_set_session(user_id, "await_manual_screenshot", {"amount": amount})
+            # remember we're waiting for a screenshot for this amount
+            db_set_session(user_id, "await_manual_screenshot", {"amount": amount})
 
-    caption = (
-        f"💳 <b>Deposit Details</b>\n"
-        f"━━━━━━━━━━━━━━━\n\n"
-        f"💰 Amount to Pay: <b>₹{amount}</b>\n"
-        f"🏅 You’ll Receive: <b>{points} points</b>\n\n"
-        f"📱 Pay to this UPI ID:\n<code>{UPI_ID}</code>\n\n"
-        f"🧾 After payment, upload your <b>payment screenshot</b> here.\n"
-        f"<i>Make sure the transaction ID is visible.</i>"
-    )
+            caption = (
+                f"💳Deposit Details\n"
+                f"━━━━━━━━━━━━━━━\n\n"
+                f"💰 Amount to Pay:₹{amount}\n"
+                f"🏅 You’ll Receive:{points} points\n\n"
+                f"📱 Pay to this UPI ID:\n{UPI_ID}\n\n"
+                f"🧾 After payment, upload your payment screenshot here.\n"
+                f"Make sure the transaction ID is visible."
+            )
 
-    try:
-        send_photo(chat_id, QR_IMAGE_URL, caption=caption)
-    except Exception:
-        send_message(chat_id, caption, parse_mode="HTML")
+            # Try sending QR as photo (URL is fine). If that fails, send plain text.
+            try:
+                res = send_photo(chat_id, QR_IMAGE_URL, caption=caption)
+                if not res.get("ok"):
+                    send_message(chat_id, caption, parse_mode="HTML")
+            except Exception:
+                send_message(chat_id, caption, parse_mode="HTML")
 
-    answer_callback(callback_id, text="UPI details sent!")
-    return jsonify(ok=True)
+            answer_callback(callback_id, text="UPI details sent!")
+            return jsonify(ok=True)
 # ---------------------------------------------------------------------
 # Command Handlers
 # ---------------------------------------------------------------------
