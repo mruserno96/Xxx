@@ -85,7 +85,7 @@ if not TOKEN:
 
 
 KUKUPAY_API_KEY = os.getenv("KUKUPAY_API_KEY", "").strip()
-KUKUPAY_RETURN_URL = os.getenv("KUKUPAY_RETURN_URL", (f"https://t.me/{BOT_USERNAME}" if BOT_USERNAME else SELF_URL)).strip()
+KUKUPAY_RETURN_URL = os.getenv("KUKUPAY_RETURN_URL", "").strip()
 KUKUPAY_WEBHOOK_SECRET = os.getenv("KUKUPAY_WEBHOOK_SECRET", "").strip()
 
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "default-secret").strip()
