@@ -1,36 +1,116 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-NumberInfo Telegram Bot (Flask)
-— Supabase fixed for Python 3.12 + Render deploy.
+NumberInfo Telegram Bot (Flask) — Production Ready
+==================================================
+
+Highlights
+----------
+- Reply keyboards (bottom) for owner/admin/user — now includes **📱 Number Info** for easy lookups (no /num needed).
+- Membership gate: checks user is a member of your group/channel(s); shows join links with inline URL buttons.
+- Broadcast: supports text, photo+caption, video+caption, document+caption (uses original file_id to forward).
+- Supabase persistence: users, admin roles, sessions (pending actions, including number-entry), broadcast logs.
+- Live stats: total users and today's active users.
+- Robust HTTP session with retries; webhook route; optional keepalive ping thread.
+- Safe for redeploy/restart — data stored in Supabase.
+- Clean structure; structured logging; helpful comments.
+- Render/Gunicorn friendly: no double-run, optional ping thread, health endpoints.
+
+Environment Variables
+---------------------
+TELEGRAM_TOKEN=...
+WEBHOOK_URL=https://your-domain.com/webhook/<secret>
+WEBHOOK_SECRET=<secret>
+CHANNEL1_INVITE_LINK=https://t.me/+abcdef
+CHANNEL1_CHAT_ID=-1001234567890
+CHANNEL2_CHAT_ID_OR_USERNAME=@yourchan
+
+SUPABASE_URL=...
+SUPABASE_SERVICE_ROLE=...  (recommended)  OR  SUPABASE_ANON_KEY=... (limited)
+OWNER_ID=123456789
+
+# Optional:
+LOG_LEVEL=INFO              # DEBUG|INFO|WARNING|ERROR
+DISABLE_PING=1              # set to 1 to disable keepalive ping thread
+PING_INTERVAL_SECONDS=300   # default 300
+REQUEST_TIMEOUT_SECONDS=20  # default 20
 """
 
 from __future__ import annotations
-import os, json, logging, threading, time
+
+import os
+import json
+import logging
+import threading
+import time
+import razorpay
+import cashfree_pg
+
 from datetime import datetime, timezone, date
 from typing import Dict, Any, Optional, List, Tuple
+from cashfree_pg import CashfreePG
 
+from flask import Flask, request, jsonify, abort
 import requests
 from requests.adapters import HTTPAdapter, Retry
-from flask import Flask, request, jsonify
 
-# ---------------------------------------------------------------------
-# Global constants (define first to avoid NameError)
-# ---------------------------------------------------------------------
-REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT_SECONDS", "20"))
+# ----- Supabase -----
 
-# ---------------------------------------------------------------------
-# Supabase Setup (✅ Compatible with Python 3.12)
-# ---------------------------------------------------------------------
+
 from supabase import create_client, Client
 
-SUPABASE_URL = "https://lawpdwfrsdgxidbsrrcy.supabase.co"
-SUPABASE_KEY = (
-    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imxhd3Bkd2Zyc2RneGlkYnNycmN5Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc2MDQ1MzgxOSwiZXhwIjoyMDc2MDI5ODE5fQ.BPRYZpC0oBly9YT_rMTyOHLo-9b3ZxCgUbGW1SKsRzY"
+# ---------------------------------------------------------------------
+# Logging (configurable via LOG_LEVEL)
+# ---------------------------------------------------------------------
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+logging.basicConfig(
+    level=getattr(logging, LOG_LEVEL, logging.INFO),
+    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
 )
+log = logging.getLogger("numberinfo-bot")
 
-print("DEBUG_SUPABASE_URL =", SUPABASE_URL)
-print("DEBUG_SUPABASE_KEY =", SUPABASE_KEY[:10] + "...")
+# ---------------------------------------------------------------------
+# Flask
+# ---------------------------------------------------------------------
+app = Flask(__name__)
+
+# ---------------------------------------------------------------------
+# Config (env)
+# ---------------------------------------------------------------------
+TOKEN = os.getenv("TELEGRAM_TOKEN", "").strip()
+if not TOKEN:
+    log.warning("TELEGRAM_TOKEN is empty! Telegram calls will fail.")
+
+
+
+CASHFREE_CLIENT_ID = os.getenv("CASHFREE_CLIENT_ID", "")
+CASHFREE_CLIENT_SECRET = os.getenv("CASHFREE_CLIENT_SECRET", "")
+CASHFREE_ENV = os.getenv("CASHFREE_ENV", "TEST")
+CASHFREE_WEBHOOK_SECRET = os.getenv("CASHFREE_WEBHOOK_SECRET", "")
+
+if CASHFREE_CLIENT_ID and CASHFREE_CLIENT_SECRET:
+    cashfree = CashfreePG(CASHFREE_CLIENT_ID, CASHFREE_CLIENT_SECRET, env=CASHFREE_ENV)
+else:
+    cashfree = None
+
+
+WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "default-secret").strip()
+TELEGRAM_API = f"https://api.telegram.org/bot{TOKEN}"
+
+WEBHOOK_URL = os.getenv("WEBHOOK_URL", "").strip()
+SELF_URL = WEBHOOK_URL.rsplit("/webhook", 1)[0] if "/webhook" in WEBHOOK_URL else (os.getenv("SELF_URL", "").strip() or "https://example.com")
+
+# Channels / Groups gate (set the ones you need)
+CHANNEL1_INVITE_LINK = os.getenv("CHANNEL1_INVITE_LINK", "").strip()
+CHANNEL1_CHAT_ID = os.getenv("CHANNEL1_CHAT_ID", "").strip()
+CHANNEL2_CHAT = os.getenv("CHANNEL2_CHAT_ID_OR_USERNAME", "").strip()
+
+# Admin owner (bootstrap): this user_id is always treated as owner/admin
+OWNER_ID = os.getenv("OWNER_ID", "").strip()
+
+# Supabase
+SUPABASE_URL = os.getenv("SUPABASE_URL", "").strip()
+SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE", os.getenv("SUPABASE_ANON_KEY", "")).strip()
 
 try:
     sb: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
@@ -39,32 +119,8 @@ except Exception as e:
     sb = None
     logging.exception("❌ Supabase init failed: %s", e)
 
-# ---------------------------------------------------------------------
-# Telegram / Flask Basic Setup
-# ---------------------------------------------------------------------
-CHANNEL1_INVITE_LINK = os.getenv("CHANNEL1_INVITE_LINK", "https://t.me/+ErP-GTl5CxYxOTU1")
-CHANNEL1_CHAT_ID = os.getenv("CHANNEL1_CHAT_ID", "-1003022675221")
-CHANNEL2_CHAT = os.getenv("CHANNEL2_CHAT", "@GxNSSupdates")
-
-TOKEN = "8221827250:AAHzEw4nwBnIvoXsJbfF5hbQ2vnmNJq2i0U"
-WEBHOOK_SECRET = "my-super-secret"
-WEBHOOK_URL = "https://blackeye-89da.onrender.com"  # Base URL of your service (no trailing /webhook/* here)
-SELF_URL = "https://blackeye-89da.onrender.com"
-OWNER_ID = os.getenv("OWNER_ID")
-
-LOG_LEVEL = "DEBUG"
-logging.basicConfig(
-    level=getattr(logging, LOG_LEVEL, logging.INFO),
-    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
-)
-log = logging.getLogger("numberinfo-bot")
-
-app = Flask(__name__)
-
-# ---------------------------------------------------------------------
-# Telegram HTTP Session
-# ---------------------------------------------------------------------
-TELEGRAM_API = f"https://api.telegram.org/bot{TOKEN}"
+# Requests / Telegram session with retries
+REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT_SECONDS", "20"))
 session = requests.Session()
 retries = Retry(
     total=5,
@@ -73,6 +129,7 @@ retries = Retry(
     backoff_factor=1.5,
     status_forcelist=[429, 500, 502, 503, 504],
     allowed_methods=["GET", "POST"],
+    respect_retry_after_header=True,
 )
 session.mount("https://", HTTPAdapter(max_retries=retries))
 session.mount("http://", HTTPAdapter(max_retries=retries))
@@ -81,11 +138,12 @@ session.mount("http://", HTTPAdapter(max_retries=retries))
 # Keyboards — Reply (bottom) only for commands; Inline only for join URLs
 # ---------------------------------------------------------------------
 def keyboard_user() -> Dict[str, Any]:
-    """Keyboard for normal users."""
     return {
         "keyboard": [
             [{"text": "🏠 Home"}, {"text": "ℹ️ Help"}],
             [{"text": "📱 Number Info"}],
+            [{"text": "💰 My Balance"}, {"text": "🎁 Refer & Earn"}],
+            [{"text": "💳 Deposit Points"}],
         ],
         "resize_keyboard": True,
         "is_persistent": True,
@@ -100,12 +158,14 @@ def keyboard_admin() -> Dict[str, Any]:
         "keyboard": [
             [{"text": "🏠 Home"}, {"text": "ℹ️ Help"}],
             [{"text": "📱 Number Info"}, {"text": "📊 Live Stats"}, {"text": "📢 Broadcast"}],
+            [{"text": "💰 My Balance"}, {"text": "🎁 Refer & Earn"}],
         ],
         "resize_keyboard": True,
         "is_persistent": True,
         "one_time_keyboard": False,
         "selective": True,
     }
+
 
 
 def keyboard_owner() -> Dict[str, Any]:
@@ -115,12 +175,16 @@ def keyboard_owner() -> Dict[str, Any]:
             [{"text": "🏠 Home"}, {"text": "ℹ️ Help"}],
             [{"text": "📱 Number Info"}, {"text": "📊 Live Stats"}, {"text": "📢 Broadcast"}],
             [{"text": "👑 List Admins"}, {"text": "➕ Add Admin"}, {"text": "➖ Remove Admin"}],
+            [{"text": "💰 My Balance"}, {"text": "🎁 Refer & Earn"}],
+            [{"text": "💎 Add Points to User"}],  # 🆕 new
         ],
         "resize_keyboard": True,
         "is_persistent": True,
         "one_time_keyboard": False,
         "selective": True,
     }
+
+
 
 
 def keyboard_none() -> Dict[str, Any]:
@@ -267,6 +331,67 @@ def is_member(user_id: int, chat_identifier: str) -> Optional[bool]:
 # ---------------------------------------------------------------------
 # Supabase persistence helpers
 # ---------------------------------------------------------------------
+
+
+
+
+
+
+
+# ---------------------------------------------------------------------
+# Points + Referral helpers
+# ---------------------------------------------------------------------
+
+def db_get_points(user_id: int) -> int:
+    if not sb:
+        return 0
+    try:
+        res = sb.table("points").select("points").eq("user_id", user_id).limit(1).execute()
+        if res.data:
+            return int(res.data[0].get("points", 0))
+        return 0
+    except Exception as e:
+        log.exception("db_get_points failed: %s", e)
+        return 0
+
+
+def db_add_points(user_id: int, amount: int) -> None:
+    """Add (or subtract if negative) user points."""
+    if not sb:
+        return
+    try:
+        current = db_get_points(user_id)
+        newval = max(current + amount, 0)
+        sb.table("points").upsert({"user_id": user_id, "points": newval}).execute()
+    except Exception as e:
+        log.exception("db_add_points failed: %s", e)
+
+
+def db_init_points_if_new(user_id: int, referred_by: Optional[int] = None) -> None:
+    """Give 5 points to new user on first start."""
+    if not sb:
+        return
+    try:
+        res = sb.table("points").select("user_id").eq("user_id", user_id).execute()
+        if not res.data:
+            sb.table("points").insert({
+                "user_id": user_id,
+                "points": 5,
+                "referred_by": referred_by
+            }).execute()
+    except Exception as e:
+        log.exception("db_init_points_if_new failed: %s", e)
+
+
+
+
+
+
+
+
+
+
+
 def db_upsert_user(user: Dict[str, Any]) -> None:
     """Upsert user in 'users' table; user is dict with Telegram fields."""
     if not sb:
@@ -441,7 +566,7 @@ def version() -> Any:
         version="1.1.0",
         webhook_url=WEBHOOK_URL,
         webhook_secret=WEBHOOK_SECRET[:4] + "***" if WEBHOOK_SECRET else "",
-        supabase=bool(sb),
+        sb=bool(sb),
     )
 
 
@@ -491,15 +616,21 @@ def webhook() -> Any:
 
         # Map bottom keyboard button presses to commands
         mapping = {
-            "🏠 Home": "/start",
-            "ℹ️ Help": "/help",
-            "📊 Live Stats": "/stats",
-            "📢 Broadcast": "/broadcast",
-            "👑 List Admins": "/list_admins",
-            "➕ Add Admin": "/add_admin",
-            "➖ Remove Admin": "/remove_admin",
-            "📱 Number Info": "/numberinfo",
+        "🏠 Home": "/start",
+        "🏠 Home": "/home",
+        "ℹ️ Help": "/help",
+        "📊 Live Stats": "/stats",
+        "📢 Broadcast": "/broadcast",
+        "👑 List Admins": "/list_admins",
+        "➕ Add Admin": "/add_admin",
+        "💳 Deposit Points": "/deposit",
+        "➖ Remove Admin": "/remove_admin",
+        "📱 Number Info": "/numberinfo",
+        "💰 My Balance": "/balance",
+        "💎 Add Points to User": "/add_points",
+        "🎁 Refer & Earn": "/refer",
         }
+
         if text in mapping:
             text = mapping[text]
 
@@ -507,6 +638,14 @@ def webhook() -> Any:
         sess = db_get_session(user_id)
         if sess:
             action = sess.get("action")
+
+
+
+            if action in ("await_add_points_user", "await_add_points_value"):
+              handle_add_points_process(chat_id, user_id, text)
+              return jsonify(ok=True)
+
+
 
             # ----- Broadcast pending -----
             if action == "broadcast_wait_message" and db_is_admin(user_id):
@@ -572,6 +711,10 @@ def webhook() -> Any:
                 handle_num(chat_id, num, user_id)
                 return jsonify(ok=True)
 
+
+
+           
+
         # membership gating for all commands and text
         if text.startswith("/"):
             cmd = text.split()[0].lower()
@@ -582,10 +725,21 @@ def webhook() -> Any:
                     return jsonify(ok=True)
 
         # Command routing
+
         if text.startswith("/start"):
             handle_start(chat_id, user_id)
+        elif text.startswith("/balance"):
+            handle_balance(chat_id, user_id)
+        elif text.startswith("/add_points"):
+            handle_add_points_start(chat_id, user_id)
+        elif text.startswith("/deposit"):
+            handle_deposit(chat_id, user_id)
+        elif text.startswith("/refer"):
+            handle_refer(chat_id, user_id)
         elif text.startswith("/help"):
-            handle_help(chat_id, user_id)
+            handle_help(chat_id, user_id)        
+        elif text.startswith("/home"):
+            handle_home(chat_id, user_id)
         elif text.startswith("/stats"):
             handle_stats(chat_id, user_id)
         elif text.startswith("/list_admins"):
@@ -616,6 +770,14 @@ def webhook() -> Any:
         return jsonify(ok=True)
 
     # ----- Handle callbacks (only join retry) -----
+    # ----- Handle callbacks (only join retry) -----
+
+
+
+
+
+
+    # ----- Handle callback queries -----
     if "callback_query" in update:
         cb = update["callback_query"]
         data = cb.get("data", "")
@@ -623,30 +785,157 @@ def webhook() -> Any:
         callback_id = cb["id"]
         chat_id = cb.get("message", {}).get("chat", {}).get("id")
 
+    
         if data == "try_again":
             answer_callback(callback_id, text="Rechecking your join status...")
-            handle_start(chat_id, user_id)
+            if check_membership_and_prompt(chat_id, user_id):
+                # ✅ If user has joined, just open Home panel instead of spamming /start
+                handle_home(chat_id, user_id)
+            else:
+                # Will already have shown join prompt inside check_membership
+                pass
+            return jsonify(ok=True)
+
+        elif data == "balance_refresh":
+            pts = db_get_points(user_id)
+            msg = (
+                f"💰 *Your Current Balance*\n\n"
+                f"🏅 Points: *{pts}*\n\n"
+                f"Use /deposit to add more or /refer to earn free points!"
+            )
+            answer_callback(callback_id, text="Balance updated!", show_alert=False)
+            send_message(chat_id, msg, parse_mode="Markdown", reply_markup=keyboard_for(user_id))
+            return jsonify(ok=True)
+
+
+        elif data.startswith("copy_link_"):
+            answer_callback(callback_id, text="✅ Link copied! Share it with your friends.", show_alert=True)
+
+        elif data.startswith("my_refs_"):
+            try:
+                res = sb.table("referrals").select("*").eq("referrer_id", user_id).execute()
+                refs = res.data or []
+                total = len(refs)
+                completed = len([r for r in refs if r.get("status") in ("joined", "completed")])
+                pending = total - completed
+
+                msg = (
+                    f"🎯 *My Referrals*\n\n"
+                    f"👥 Total Invited: *{total}*\n"
+                    f"✅ Joined: *{completed}*\n"
+                    f"🕓 Pending: *{pending}*\n\n"
+                    f"💰 You’ve earned approximately *{completed * 2} points* from referrals!"
+                )
+                send_message(chat_id, msg, parse_mode="Markdown", reply_markup=keyboard_for(user_id))
+            except Exception as e:
+                log.exception("Failed to fetch referrals: %s", e)
+                send_message(chat_id, "⚠️ Unable to fetch referral data. Try again later.")
+            return jsonify(ok=True)
+
+
+        elif data.startswith("check_payment_"):
+            link_id = data.split("_", 2)[2]
+            try:
+                payment_status = razorpay_client.payment_link.fetch(link_id)
+                status = payment_status.get("status")
+                notes = payment_status.get("notes", {})
+                user_points = notes.get("points")
+                amount = int(payment_status.get("amount_paid", 0)) // 100
+
+                if status == "paid":
+                    send_message(
+                        chat_id,
+                        f"✅ *Payment Confirmed!*\n\n"
+                        f"💰 Amount: ₹{amount}\n"
+                        f"🎯 Points: +{user_points}\n\n"
+                        "Your points will reflect shortly if not already added.",
+                        parse_mode="Markdown",
+                        reply_markup=keyboard_for(user_id)
+                    )
+
+                    # Update Supabase record if exists
+                    if sb:
+                        try:
+                            sb.table("payments").update({"status": "paid"}).eq("link_id", link_id).execute()
+                        except Exception as e:
+                            log.warning("Unable to update payment status: %s", e)
+
+                elif status == "created":
+                    send_message(
+                        chat_id,
+                        "⏳ *Payment Pending!*\n\nPlease complete your payment using the link below 👇",
+                        parse_mode="Markdown",
+                        reply_markup={
+                            "inline_keyboard": [
+                                [{"text": "💳 Pay Now", "url": payment_status.get("short_url")}],
+                                [{"text": "🔁 Refresh Status", "callback_data": f"check_payment_{link_id}"}]
+                            ]
+                        }
+                    )
+                else:
+                    send_message(
+                        chat_id,
+                        f"⚠️ Current Status: *{status.upper()}*\nIf you already paid, please wait 1–2 minutes.",
+                        parse_mode="Markdown"
+                    )
+            except Exception as e:
+                log.exception("Payment status check failed: %s", e)
+                send_message(chat_id, "⚠️ Unable to check payment status. Try again later.")
+            return jsonify(ok=True)
         else:
             answer_callback(callback_id, text="OK")
-        return jsonify(ok=True)
+            return jsonify(ok=True)
 
-    return jsonify(ok=True)
+
 
 # ---------------------------------------------------------------------
 # Command Handlers
 # ---------------------------------------------------------------------
 def handle_start(chat_id: int, user_id: int) -> None:
+    # Step 1: membership gate
     if not check_membership_and_prompt(chat_id, user_id):
         return
-    first_name = "Buddy"
-    try:
-        r = session.get(f"{TELEGRAM_API}/getChat", params={"chat_id": chat_id}, timeout=10)
-        if r.status_code == 200:
-            user_data = r.json().get("result", {})
-            first_name = user_data.get("first_name", first_name)
-    except Exception:
-        pass
 
+    # Step 2: parse referral param (if any)
+    referred_by = None
+    try:
+        text = request.get_json(force=True).get("message", {}).get("text", "") or ""
+        parts = text.split()
+        if len(parts) > 1 and parts[1].isdigit():
+            referred_by = int(parts[1])
+    except Exception:
+        referred_by = None
+
+    # Step 3: always try to init points (only inserts if user not in points table)
+    db_init_points_if_new(user_id, referred_by)
+
+    # Step 4: create referral record only if not present
+    if referred_by and referred_by != user_id and sb:
+        try:
+            exist = sb.table("referrals").select("id").eq("referrer_id", referred_by).eq("referred_id", user_id).limit(1).execute()
+            if not (exist.data or []):
+                sb.table("referrals").insert({
+                    "referrer_id": referred_by,
+                    "referred_id": user_id,
+                    "status": "pending"
+                }).execute()
+        except Exception as e:
+            log.exception("Referral insert failed: %s", e)
+
+    # Step 5: if any pending referral now meets membership, complete + reward
+    try:
+        if sb:
+            res = sb.table("referrals").select("id, referrer_id").eq("referred_id", user_id).eq("status", "pending").execute()
+            for ref in res.data or []:
+                if check_membership_and_prompt(chat_id, user_id):
+                    sb.table("referrals").update({"status": "completed"}).eq("id", ref["id"]).execute()
+                    db_add_points(ref["referrer_id"], 2)
+                    send_message(ref["referrer_id"], "🎉 Your referral joined successfully! You earned +2 points.")
+    except Exception as e:
+        log.exception("Referral completion failed: %s", e)
+
+    # Step 6: welcome
+    first_name = "Buddy"
     welcome = (
         f"👋 Hello {first_name}!\n"
         "Welcome to *Our Number Info Bot!* 🤖\n\n"
@@ -673,6 +962,128 @@ def handle_help(chat_id: int, user_id: Optional[int] = None) -> None:
     )
     send_message(chat_id, help_text, parse_mode="Markdown", reply_markup=keyboard_for(user_id or 0))
 
+def handle_balance(chat_id: int, user_id: int):
+    """Show fancy balance screen with progress bar and referral info."""
+    pts = db_get_points(user_id)
+
+    # Progress bar (out of 20 points = full)
+    total_bar = 20
+    filled = int((pts / total_bar) * 10)
+    filled = min(filled, 10)
+    bar = "🟩" * filled + "⬜️" * (10 - filled)
+
+    # Get referrals count (optional if you have 'referrals' table)
+    ref_count = 0
+    try:
+        if sb:
+            res = sb.table("referrals").select("id").eq("referrer_id", user_id).execute()
+            ref_count = len(res.data or [])
+    except Exception:
+        ref_count = 0
+
+    msg = (
+        f"💰 *My Balance*\n\n"
+        f"🏅 Points: *{pts}*\n"
+        f"{bar}\n\n"
+        f"📞 Searches left: *{pts}*\n"
+        f"👥 Referrals: *{ref_count}*\n\n"
+        f"⚡ Each search costs *1 point*\n"
+        f"🎁 Earn +2 points per referral using /refer\n"
+        f"💳 Deposit feature coming soon!"
+    )
+
+    send_message(chat_id, msg, parse_mode="Markdown", reply_markup=keyboard_for(user_id))
+
+
+
+
+def handle_home(chat_id: int, user_id: int):
+    if not check_membership_and_prompt(chat_id, user_id):
+        return
+    pts = db_get_points(user_id)
+    msg = (
+        "🏠 *Home*\n"
+        f"💰 Points: *{pts}*\n\n"
+        "Use the buttons below."
+    )
+    send_message(chat_id, msg, parse_mode="Markdown", reply_markup=keyboard_for(user_id))
+
+
+def handle_add_points_start(chat_id: int, user_id: int):
+    if role_for(user_id) != "owner":
+        send_message(chat_id, "❌ Only owner can add points.", reply_markup=keyboard_for(user_id))
+        return
+    db_set_session(user_id, "await_add_points_user")
+    send_message(chat_id, "💎 Send the *user_id* to whom you want to add points:", parse_mode="Markdown")
+
+
+def handle_add_points_process(chat_id: int, owner_id: int, text: str):
+    sess = db_get_session(owner_id)
+    if not sess:
+        return
+
+    action = sess.get("action")
+    payload = sess.get("payload", {})
+
+    # Step 1: expect user_id
+    if action == "await_add_points_user":
+        if not text.isdigit():
+            send_message(chat_id, "❌ Please send a valid numeric user_id.")
+            return
+        db_set_session(owner_id, "await_add_points_value", {"target_user": int(text)})
+        send_message(chat_id, "✅ User ID received.\nNow send the *number of points* to add:", parse_mode="Markdown")
+        return
+
+    # Step 2: expect amount
+    if action == "await_add_points_value":
+        if not text.isdigit():
+            send_message(chat_id, "❌ Please send a valid number.")
+            return
+        points = int(text)
+        target_user = payload.get("target_user")
+        if not target_user:
+            send_message(chat_id, "⚠️ Missing target user, start again with /add_points.")
+            db_clear_session(owner_id)
+            return
+
+        db_add_points(target_user, points)
+        send_message(chat_id, f"✅ Added *{points} points* to user `{target_user}`.", parse_mode="Markdown")
+        send_message(target_user, f"💎 You have received *+{points} points!* from the owner 🎉", parse_mode="Markdown")
+        db_clear_session(owner_id)
+        return
+
+
+
+
+
+def handle_refer(chat_id: int, user_id: int):
+    """Fancy referral card with share/copy buttons."""
+    bot_username = "OfficialBlackEyeBot"  # 🟢 Replace this with your real bot username (without @)
+    link = f"https://t.me/{bot_username}?start={user_id}"
+
+    msg = (
+        "🎁 *Refer & Earn Points!* 🎁\n\n"
+        "💡 Invite your friends to use this bot and earn *+2 points* per referral.\n\n"
+        "📱 When your friend joins both channels and starts the bot, "
+        "you both get rewarded automatically!\n\n"
+        "🔗 *Your Referral Link:*\n"
+        f"`{link}`\n\n"
+        "👇 Share it now and grow your balance!"
+    )
+
+    inline_buttons = {
+        "inline_keyboard": [
+            [
+                {"text": "📋 Copy Link", "callback_data": f"copy_link_{user_id}"},
+                {"text": "📤 Share to Friends", "url": f"https://t.me/share/url?url={link}&text=🎁%20Join%20this%20NumberInfo%20Bot%20and%20get%20Free%20Points!"},
+            ],
+            [
+                {"text": "🎯 My Referrals", "callback_data": f"my_refs_{user_id}"}
+            ]
+        ]
+    }
+    send_message(chat_id, msg, parse_mode="Markdown", reply_markup=inline_buttons)
+
 
 def handle_stats(chat_id: int, user_id: int) -> None:
     if role_for(user_id) not in ("owner", "admin"):
@@ -685,6 +1096,25 @@ def handle_stats(chat_id: int, user_id: int) -> None:
         f"• Active Today: *{today}*"
     )
     send_message(chat_id, txt, parse_mode="Markdown", reply_markup=keyboard_for(user_id))
+
+
+def handle_deposit(chat_id: int, user_id: int):
+    """Show deposit options and generate Razorpay link."""
+    amounts = [
+        {"label": "₹10 → +1 Point", "value": 10},
+        {"label": "₹50 → +5 Points", "value": 50},
+        {"label": "₹100 → +10 Points", "value": 100},
+        {"label": "₹200 → +20 Points", "value": 200},
+    ]
+    buttons = [
+        [{"text": a["label"], "callback_data": f"deposit_{a['value']}"}] for a in amounts
+    ]
+    send_message(
+        chat_id,
+        "💳 *Deposit Points*\n\nSelect an amount to add points:",
+        parse_mode="Markdown",
+        reply_markup={"inline_keyboard": buttons},
+    )
 
 
 def handle_list_admins(chat_id: int, user_id: int) -> None:
@@ -750,6 +1180,16 @@ def handle_numberinfo(chat_id: int, user_id: int) -> None:
         reply_markup=keyboard_for(user_id),
     )
 
+def handle_payments(chat_id: int, user_id: int):
+    if not sb:
+        send_message(chat_id, "⚠️ Payments history not available.")
+        return
+    res = sb.table("payments").select("*").eq("user_id", user_id).order("id", desc=True).limit(5).execute()
+    if not res.data:
+        send_message(chat_id, "📭 No payments yet.")
+        return
+    lines = [f"₹{r['amount']} → +{r['points']} pts — *{r['status'].capitalize()}*" for r in res.data]
+    send_message(chat_id, "💳 *Recent Deposits:*\n\n" + "\n".join(lines), parse_mode="Markdown")
 
 def handle_num(chat_id: int, number: str, user_id: Optional[int] = None) -> None:
     if user_id and not check_membership_and_prompt(chat_id, user_id):
@@ -765,22 +1205,47 @@ def handle_num(chat_id: int, number: str, user_id: Optional[int] = None) -> None
             "कृपया केवल 10 अंकों का नंबर भेजें। उदाहरण: 9235895648",
             reply_markup=keyboard_for(user_id or 0),
         )
-        return
+        return 
+    # ✅ Step: Check balance before search
+    if user_id:
+        pts = db_get_points(user_id)
+        if pts <= 0:
+            msg = (
+                "⚠️ *You have 0 points left!* ⚠️\n\n"
+                "💡 Each number search costs *1 point*.\n"
+                "🎁 Use /refer to invite friends and earn *+2 points* each!\n"
+                "💳 Deposit option coming soon!"
+            )
+            send_message(chat_id, msg, parse_mode="Markdown", reply_markup=keyboard_for(user_id))
+            return
 
-    # Step 1: Send initial message safely (no reply_markup so it's editable)
-    init_resp = send_message(chat_id, "🔍 Searching number info… Please wait")
+     # Step 1: Send initial message safely
+    # Do not attach reply_markup to make the message editable
+    init_resp = send_message(
+        chat_id,
+        "🔍 Searching number info… Please wait"
+    )
+
+
+
 
     # Safer extraction of message_id
     message_id = init_resp.get("result", {}).get("message_id") if init_resp and init_resp.get("ok") else None
 
-    # Step 2: Update progress (FAST — fewer, bigger jumps)
+  # Step 2: Update progress (FAST — fewer, bigger jumps)
     if message_id:
-        time.sleep(0.3)  # avoid Telegram edit race
+        # small delay before first edit to avoid Telegram edit race
+        time.sleep(0.3)
+        # faster and simpler steps
         steps = [22, 44, 66, 88, 100]
         for p in steps:
             try:
-                time.sleep(0.35)
-                resp = edit_message(chat_id, message_id, f"🔍 Searching number info… {p}%")
+                time.sleep(0.35)  # faster animation
+                resp = edit_message(
+                    chat_id,
+                    message_id,
+                    f"🔍 Searching number info… {p}%"
+                )
                 if not resp.get("ok"):
                     log.warning("editMessage failed at %d%%: %s", p, resp.get("error"))
             except Exception as e:
@@ -788,6 +1253,8 @@ def handle_num(chat_id: int, number: str, user_id: Optional[int] = None) -> None
         edit_message(chat_id, message_id, "✅ Search complete! Here's your result ↓")
     else:
         send_message(chat_id, "🔍 Searching number info…", reply_markup=keyboard_for(user_id or 0))
+
+
 
     # Step 3: Fetch data from API
     api_url = f"https://yahu.site/api/?number={number}&key=The_ajay"
@@ -815,6 +1282,10 @@ def handle_num(chat_id: int, number: str, user_id: Optional[int] = None) -> None
         if message_id:
             edit_message(chat_id, message_id, "✅ Search complete! Here's your result ↓")
         send_message(chat_id, f"<pre>{pretty_json}</pre>", parse_mode="HTML", reply_markup=keyboard_for(user_id or 0))
+          
+     # ✅ Deduct 1 point after successful lookup
+        if user_id:
+            db_add_points(user_id, -1)
 
     except Exception as e:
         log.exception("API fetch failed: %s", e)
@@ -882,12 +1353,10 @@ def run_broadcast(admin_user_id: int, chat_id: int, message_obj: Dict[str, Any])
 # ---------------------------------------------------------------------
 @app.route("/set_webhook", methods=["GET"])
 def set_webhook() -> Any:
-    base = WEBHOOK_URL.rstrip("/")
-    if not base:
+    url = WEBHOOK_URL
+    if not url:
         return jsonify(ok=False, error="WEBHOOK_URL not set"), 400
-    # Set to your actual secret endpoint
-    full = f"{base}/webhook/{WEBHOOK_SECRET}"
-    r = session.get(f"{TELEGRAM_API}/setWebhook", params={"url": full}, timeout=10)
+    r = session.get(f"{TELEGRAM_API}/setWebhook", params={"url": url}, timeout=10)
     try:
         return jsonify(r.json())
     except Exception:
@@ -925,9 +1394,62 @@ if os.getenv("DISABLE_PING", "").strip() not in ("1", "true", "True"):
 else:
     log.info("Keepalive ping thread disabled by env.")
 
+
+
+
 # ---------------------------------------------------------------------
-# Main (for local dev). On Render/Gunicorn use: gunicorn main:app
+# Razorpay Webhook — auto-credit points + status notification
+# ---------------------------------------------------------------------
+@app.route("/cashfree_webhook", methods=["POST"])
+def cashfree_webhook():
+    import hmac, hashlib
+
+    payload = request.data.decode("utf-8")
+    signature = request.headers.get("x-webhook-signature", "")
+    expected_sig = hmac.new(
+        bytes(CASHFREE_WEBHOOK_SECRET, "utf-8"),
+        msg=bytes(payload, "utf-8"),
+        digestmod=hashlib.sha256,
+    ).hexdigest()
+
+    if not hmac.compare_digest(signature, expected_sig):
+        log.warning("Invalid Cashfree webhook signature.")
+        return abort(400)
+
+    data = request.get_json()
+    event = data.get("event")
+    order_id = data.get("data", {}).get("order", {}).get("order_id")
+    status = data.get("data", {}).get("order", {}).get("order_status")
+
+    # lookup DB
+    if sb:
+        res = sb.table("payments").select("user_id, chat_id").eq("order_id", order_id).limit(1).execute()
+        if res.data:
+            user_id = res.data[0]["user_id"]
+            chat_id = res.data[0]["chat_id"]
+        else:
+            user_id, chat_id = None, None
+
+    if event == "ORDER_PAID" or status == "PAID":
+        points = int(data["data"]["order"]["order_amount"]) // 10
+        db_add_points(user_id, points)
+        send_message(chat_id, f"✅ Payment of ₹{data['data']['order']['order_amount']} confirmed! +{points} points added.", parse_mode="Markdown")
+        if sb:
+            sb.table("payments").update({"status": "paid"}).eq("order_id", order_id).execute()
+
+    return jsonify(ok=True)
+
+
+
+
+
+
+
+
+# ---------------------------------------------------------------------
+# Main (for local dev). On Render/Gunicorn use: gunicorn app:app
 # ---------------------------------------------------------------------
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "5000"))
+    # For local dev only; in production use gunicorn
     app.run(host="0.0.0.0", port=port)
