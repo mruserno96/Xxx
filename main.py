@@ -35,10 +35,10 @@ if hasattr(typing.ForwardRef, "_evaluate"):
     _orig_eval = typing.ForwardRef._evaluate
     def _patched_evaluate(self, globalns=None, localns=None, recursive_guard=None):
         try:
-            # Try normal call
-            return _orig_eval(self, globalns, localns, recursive_guard)
+            # Try full signature (Python 3.12+)
+            return _orig_eval(self, globalns, localns, recursive_guard=recursive_guard)
         except TypeError:
-            # Older Pydantic calls without recursive_guard
+            # Older call (Python <3.12)
             return _orig_eval(self, globalns, localns)
     typing.ForwardRef._evaluate = _patched_evaluate
 
