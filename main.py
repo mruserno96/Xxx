@@ -102,23 +102,29 @@ CHANNEL2_CHAT = os.getenv("CHANNEL2_CHAT_ID_OR_USERNAME", "").strip()
 # Admin owner (bootstrap): this user_id is always treated as owner/admin
 OWNER_ID = os.getenv("OWNER_ID", "").strip()
 
+# ---------------------------------------------------------------------
 SUPABASE_URL = os.getenv("SUPABASE_URL", "").strip()
-SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE", os.getenv("SUPABASE_ANON_KEY", "")).strip()
+SUPABASE_KEY = (
+    os.getenv("SUPABASE_SERVICE_ROLE", os.getenv("SUPABASE_ANON_KEY", "")) or ""
+).strip()
 
-supabase: Optional[Client] = None
-# --- DEBUG ENV CHECKS (for Render visibility) ---
-log.info("🔍 ENV CHECK: SUPABASE_URL = %s", SUPABASE_URL)
-log.info("🔍 ENV CHECK: SUPABASE_KEY (first 8 chars) = %s", SUPABASE_KEY[:8] + "***" if SUPABASE_KEY else "EMPTY")
+log.info(f"🔍 ENV CHECK: SUPABASE_URL = {SUPABASE_URL}")
+log.info(
+    f"🔍 ENV CHECK: SUPABASE_KEY (first 8 chars) = {SUPABASE_KEY[:8]}***"
+    if SUPABASE_KEY
+    else "🔍 ENV CHECK: SUPABASE_KEY = EMPTY"
+)
 
-if SUPABASE_URL and SUPABASE_KEY and create_client:
+supabase = None
+if SUPABASE_URL and SUPABASE_KEY:
     try:
-        supabase = create_client(SUPABASE_URL, SUPABASE_KEY)  # type: ignore
-        log.info("✅ Supabase client initialized")
+        from supabase import create_client, Client
+        supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+        log.info("✅ Supabase client initialized successfully")
     except Exception as e:
         log.exception("❌ Supabase init failed: %s", e)
 else:
-    log.warning("⚠️ Supabase not configured — set SUPABASE_URL and SUPABASE_SERVICE_ROLE/ANON. Persistence disabled.")
-
+    log.warning("⚠️ Supabase not configured — please check env vars in Render dashboard.")
 # Requests / Telegram session with retries
 REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT_SECONDS", "20"))
 session = requests.Session()
