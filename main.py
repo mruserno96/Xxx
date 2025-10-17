@@ -102,15 +102,14 @@ CHANNEL2_CHAT = os.getenv("CHANNEL2_CHAT_ID_OR_USERNAME", "").strip()
 # Admin owner (bootstrap): this user_id is always treated as owner/admin
 OWNER_ID = os.getenv("OWNER_ID", "").strip()
 
-# Supabase
 SUPABASE_URL = os.getenv("SUPABASE_URL", "").strip()
 SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE", os.getenv("SUPABASE_ANON_KEY", "")).strip()
 
+supabase: Optional[Client] = None
 # --- DEBUG ENV CHECKS (for Render visibility) ---
 log.info("🔍 ENV CHECK: SUPABASE_URL = %s", SUPABASE_URL)
 log.info("🔍 ENV CHECK: SUPABASE_KEY (first 8 chars) = %s", SUPABASE_KEY[:8] + "***" if SUPABASE_KEY else "EMPTY")
 
-supabase: Optional[Client] = None
 if SUPABASE_URL and SUPABASE_KEY and create_client:
     try:
         supabase = create_client(SUPABASE_URL, SUPABASE_KEY)  # type: ignore
