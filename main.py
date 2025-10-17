@@ -1280,7 +1280,7 @@ def handle_balance(chat_id: int, user_id: int):
         f"👥 Referrals: *{ref_count}*\n\n"
         f"⚡ Each search costs *1 point*\n"
         f"🎁 Earn +2 points per referral using /refer\n"
-        f"💳 Deposit feature coming soon!"
+        f"💳 Tap On Deposit Points To Get More Points "
     )
 
     send_message(chat_id, msg, parse_mode="Markdown", reply_markup=keyboard_for(user_id))
@@ -1568,7 +1568,7 @@ def handle_num(chat_id: int, number: str, user_id: Optional[int] = None) -> None
                 "⚠️ *You have 0 points left!* ⚠️\n\n"
                 "💡 Each number search costs *1 point*.\n"
                 "🎁 Use /refer to invite friends and earn *+2 points* each!\n"
-                "💳 Deposit option coming soon!"
+                "💳 Tap On Deposit Points To Get More Points "
             )
             send_message(chat_id, msg, parse_mode="Markdown", reply_markup=keyboard_for(user_id))
             return
