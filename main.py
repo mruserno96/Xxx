@@ -1,98 +1,62 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-NumberInfo Telegram Bot (Flask) — Hardcoded Configuration (no env, no Render)
+NumberInfo Telegram Bot (Flask)
+— Supabase fixed for Python 3.12 + Render deploy.
 """
 
 from __future__ import annotations
-import os
-import json
-import logging
-import threading
-import time
-import supabase
+import os, json, logging, threading, time
 from datetime import datetime, timezone, date
 from typing import Dict, Any, Optional, List, Tuple
-from flask import Flask, request, jsonify
+
 import requests
 from requests.adapters import HTTPAdapter, Retry
+from flask import Flask, request, jsonify
 
-# ----- Supabase -----
+# ---------------------------------------------------------------------
+# Supabase Setup (✅ compatible with Python 3.12)
+# ---------------------------------------------------------------------
 try:
     from supabase import create_client, Client  # type: ignore
-except Exception:  # pragma: no cover
+except Exception:
     create_client = None
     Client = object  # type: ignore
 
+SUPABASE_URL = "https://lawpdwfrsdgxidbsrrcy.supabase.co"
+SUPABASE_KEY = (
+    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imxhd3Bkd2Zyc2RneGlkYnNycmN5Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc2MDQ1MzgxOSwiZXhwIjoyMDc2MDI5ODE5fQ.BPRYZpC0oBly9YT_rMTyOHLo-9b3ZxCgUbGW1SKsRzY"
+)
+
+print("DEBUG_SUPABASE_URL =", SUPABASE_URL)
+print("DEBUG_SUPABASE_KEY =", SUPABASE_KEY[:10] + "...")
+
+try:
+    sb: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+    print("✅ Supabase initialized successfully!")
+except Exception as e:
+    sb = None
+    logging.exception("❌ Supabase init failed: %s", e)
+
 # ---------------------------------------------------------------------
-# DIRECT CONFIG (✅ Hardcoded)
+# Telegram / Flask basic setup
 # ---------------------------------------------------------------------
 TOKEN = "8221827250:AAHzEw4nwBnIvoXsJbfF5hbQ2vnmNJq2i0U"
 WEBHOOK_SECRET = "my-super-secret"
 WEBHOOK_URL = "https://blackeye-89da.onrender.com"
 SELF_URL = "https://blackeye-89da.onrender.com"
 
-# Channels / Groups
-CHANNEL1_INVITE_LINK = "https://t.me/+ErP-GTl5CxYxOTU1"
-CHANNEL1_CHAT_ID = "-1003022675221"
-CHANNEL2_CHAT = "@GxNSSupdates"
-
-# Owner
-OWNER_ID = "8356178010"
-
-# Supabase
-SUPABASE_URL = "https://lawpdwfrsdgxidbsrrcy.supabase.co"
-SUPABASE_KEY = ("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imxhd3Bkd2Zyc2RneGlkYnNycmN5Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc2MDQ1MzgxOSwiZXhwIjoyMDc2MDI5ODE5fQ.BPRYZpC0oBly9YT_rMTyOHLo-9b3ZxCgUbGW1SKsRzY")
-
-# Payments
-CASHFREE_CLIENT_ID = "1102192100315ab5202afbeb6a82912011"
-CASHFREE_CLIENT_SECRET = "cfsk_ma_prod_8c3692a863d18933b29e379ca70e3f11_80c9edbc"
-CASHFREE_ENV = "PROD"
-CASHFREE_WEBHOOK_SECRET = "F0dNF2$+@Sr~"
-
-KUKUPAY_API_KEY = "axMSq3oSEEhrYvWNjXeCavGQisdxaY1U"
-KUKUPAY_RETURN_URL = "https://t.me/OfficialBlackEyeBot"
-KUKUPAY_WEBHOOK_SECRET = "F0dNF2$+@Sr~"
-
-# Other settings
 LOG_LEVEL = "DEBUG"
-PORT = 10000
-
-# ---------------------------------------------------------------------
-# Logging setup
-# ---------------------------------------------------------------------
 logging.basicConfig(
     level=getattr(logging, LOG_LEVEL, logging.INFO),
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
 )
 log = logging.getLogger("numberinfo-bot")
 
-# ---------------------------------------------------------------------
-# Flask
-# ---------------------------------------------------------------------
 app = Flask(__name__)
 
-# ---------------------------------------------------------------------
-# Supabase Init
-# ---------------------------------------------------------------------
-print("DEBUG_SUPABASE_URL =", SUPABASE_URL)
-print("DEBUG_SUPABASE_KEY =", SUPABASE_KEY[:10] + "...")
-
-supabase: Optional[Client] = None
-try:
-    from supabase import create_client, Client
-    sb: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-    print("✅ Supabase initialized successfully!")
-except Exception as e:
-    sb = None
-    log.exception("❌ Supabase init failed: %s", e)
-# ---------------------------------------------------------------------
-# Telegram API
-# ---------------------------------------------------------------------
+# Telegram HTTP session
 TELEGRAM_API = f"https://api.telegram.org/bot{TOKEN}"
-
-# Requests / Telegram session with retries
-REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT_SECONDS", "20"))
 session = requests.Session()
 retries = Retry(
     total=5,
@@ -101,7 +65,6 @@ retries = Retry(
     backoff_factor=1.5,
     status_forcelist=[429, 500, 502, 503, 504],
     allowed_methods=["GET", "POST"],
-    respect_retry_after_header=True,
 )
 session.mount("https://", HTTPAdapter(max_retries=retries))
 session.mount("http://", HTTPAdapter(max_retries=retries))
