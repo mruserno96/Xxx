@@ -7,6 +7,6 @@ razorpay
 
 python-telegram-bot
 supabase==1.0.3
-httpx==0.24.1
+httpx==0.23.3
 pydantic==1.10.13
 cashfree-pg==4.2.4
