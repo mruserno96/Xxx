@@ -10,6 +10,7 @@ import json
 import logging
 import threading
 import time
+import supabase
 from datetime import datetime, timezone, date
 from typing import Dict, Any, Optional, List, Tuple
 from flask import Flask, request, jsonify
@@ -79,8 +80,8 @@ print("DEBUG_SUPABASE_KEY =", SUPABASE_KEY[:10] + "...")
 
 supabase: Optional[Client] = None
 try:
-    supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
-    log.info("✅ Supabase client initialized successfully!")
+   supabase: Client = supabase.create_client(SUPABASE_URL, SUPABASE_KEY)
+print("✅ Supabase initialized successfully!")
 except Exception as e:
     log.exception("❌ Supabase init failed: %s", e)
 # ---------------------------------------------------------------------
