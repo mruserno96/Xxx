@@ -1,7 +1,7 @@
 Flask>=2.3
 requests>=2.31
 gunicorn>=21.2
-supabase==2.5.1
+supabase
 
 razorpay
 aiogram
