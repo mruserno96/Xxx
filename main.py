@@ -138,7 +138,7 @@ def db_is_admin(user_id: int) -> bool:
     if not supabase:
         return False
     try:
-        res = supabase.table("users").select("is_admin").eq("id", user_id).limit(1).execute()  # type: ignore
+        res = sb.table("users").select("is_admin").eq("id", user_id).limit(1).execute()  # type: ignore
         if getattr(res, "data", None) and len(res.data) > 0:  # type: ignore
             return bool(res.data[0].get("is_admin", False))  # type: ignore
         return False
@@ -264,7 +264,7 @@ def is_member(user_id: int, chat_identifier: str) -> Optional[bool]:
 # ---------------------------------------------------------------------
 def db_upsert_user(user: Dict[str, Any]) -> None:
     """Upsert user in 'users' table; user is dict with Telegram fields."""
-    if not supabase:
+    if not sb:
         return
     try:
         row = {
@@ -281,10 +281,10 @@ def db_upsert_user(user: Dict[str, Any]) -> None:
 
 
 def db_mark_admin(user_id: int, is_admin: bool) -> bool:
-    if not supabase:
+    if not sb:
         return False
     try:
-        supabase.table("users").upsert({"id": user_id, "is_admin": is_admin}).execute()  # type: ignore
+        sb.table("users").upsert({"id": user_id, "is_admin": is_admin}).execute()  # type: ignore
         return True
     except Exception as e:
         log.exception("db_mark_admin failed: %s", e)
@@ -292,10 +292,10 @@ def db_mark_admin(user_id: int, is_admin: bool) -> bool:
 
 
 def db_list_admins() -> List[Dict[str, Any]]:
-    if not supabase:
+    if not sb:
         return []
     try:
-        res = supabase.table("users").select("id,username,first_name,last_name,is_admin").eq("is_admin", True).execute()  # type: ignore
+        res = sb.table("users").select("id,username,first_name,last_name,is_admin").eq("is_admin", True).execute()  # type: ignore
         return res.data or []  # type: ignore
     except Exception as e:
         log.exception("db_list_admins failed: %s", e)
@@ -303,10 +303,10 @@ def db_list_admins() -> List[Dict[str, Any]]:
 
 
 def db_all_user_ids() -> List[int]:
-    if not supabase:
+    if not sb:
         return []
     try:
-        res = supabase.table("users").select("id").execute()  # type: ignore
+        res = sb.table("users").select("id").execute()  # type: ignore
         return [row["id"] for row in (res.data or [])]  # type: ignore
     except Exception as e:
         log.exception("db_all_user_ids failed: %s", e)
@@ -318,7 +318,7 @@ def db_set_session(user_id: int, action: Optional[str] = None, payload: Optional
     if not supabase:
         return
     try:
-        supabase.table("sessions").upsert({
+        sb.table("sessions").upsert({
             "user_id": user_id,
             "action": action,
             "payload": json.dumps(payload or {})
@@ -328,10 +328,10 @@ def db_set_session(user_id: int, action: Optional[str] = None, payload: Optional
 
 
 def db_get_session(user_id: int) -> Optional[Dict[str, Any]]:
-    if not supabase:
+    if not sb:
         return None
     try:
-        res = supabase.table("sessions").select("*").eq("user_id", user_id).limit(1).execute()  # type: ignore
+        res = sb.table("sessions").select("*").eq("user_id", user_id).limit(1).execute()  # type: ignore
         if res.data:  # type: ignore
             row = res.data[0]  # type: ignore
             payload = {}
@@ -347,16 +347,16 @@ def db_get_session(user_id: int) -> Optional[Dict[str, Any]]:
 
 
 def db_clear_session(user_id: int) -> None:
-    if not supabase:
+    if not sb:
         return
     try:
-        supabase.table("sessions").delete().eq("user_id", user_id).execute()  # type: ignore
+        sb.table("sessions").delete().eq("user_id", user_id).execute()  # type: ignore
     except Exception as e:
         log.exception("db_clear_session failed: %s", e)
 
 
 def db_log_broadcast(desc: str, total: int, success: int, failed: int) -> None:
-    if not supabase:
+    if not sb:
         return
     try:
         supabase.table("broadcasts").insert({
@@ -374,7 +374,7 @@ def db_stats_counts() -> Tuple[int, int]:
     if not supabase:
         return 0, 0
     try:
-        res = supabase.table("users").select("id,last_seen").execute()  # type: ignore
+        res = sb.table("users").select("id,last_seen").execute()  # type: ignore
         rows = res.data or []  # type: ignore
         total = len(rows)
         today_str = date.today().isoformat()
