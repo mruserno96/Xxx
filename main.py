@@ -100,7 +100,7 @@ WEBHOOK_URL = os.getenv("WEBHOOK_URL", "").strip()
 SELF_URL = WEBHOOK_URL.rsplit("/webhook", 1)[0] if "/webhook" in WEBHOOK_URL else (os.getenv("SELF_URL", "").strip() or "https://example.com")
 UPI_ID = os.getenv("UPI_ID", "2xclubwinsharma@fam")
 QR_IMAGE_URL = os.getenv("QR_IMAGE_URL", "https://alexcoder.shop/qer.jpg")
-POINTS_PER_RUPEE = int(os.getenv("POINTS_PER_RUPEE", "10"))  # e.g. ₹10 -> 100 pts
+RUPEES_PER_POINT = int(os.getenv("RUPEES_PER_POINT", "10"))  # e.g. 10 rupees = 1 point
 MANUAL_AMOUNTS = [10, 50, 100, 200, 500]  # rupees
 # Channels / Groups gate (set the ones you need)
 CHANNEL1_INVITE_LINK = os.getenv("CHANNEL1_INVITE_LINK", "").strip()
@@ -661,7 +661,7 @@ def webhook() -> Any:
             # largest size photo entry
             file_id = msg["photo"][-1]["file_id"]
             order_id = f"MAN-{user_id}-{int(time.time())}"
-            points = amount * POINTS_PER_RUPEE
+            points = amount * RUPEES_PER_POINT
 
             # insert a pending row into existing 'payments' table
             # reuse 'link_id' to store screenshot file_id (no schema change needed)
@@ -1048,7 +1048,7 @@ def webhook() -> Any:
             return jsonify(ok=True)
 
     # Calculate points as per ₹10 = 1 point
-    points = amount // 10
+    points = amount // RUPEES_PER_POINT  # (Option A)
 
     db_set_session(user_id, "await_manual_screenshot", {"amount": amount})
 
@@ -1440,13 +1440,14 @@ def handle_deposit(chat_id: int, user_id: int):
     ]
 
     msg = (
-        "💳 <b>Deposit Points</b>\n"
-        "━━━━━━━━━━━━━━━\n\n"
-        "Select the amount you wish to deposit 👇\n\n"
-        "Conversion Rate: <b>₹10 = 1 Point</b>\n"
-        "Example: ₹100 → 10 Points\n\n"
-        "After payment, upload your screenshot proof here."
-    )
+    "💳 <b>Deposit Points</b>\n"
+    "━━━━━━━━━━━━━━━\n\n"
+    "Select the amount you wish to deposit 👇\n\n"
+    f"Conversion Rate: <b>₹{RUPEES_PER_POINT} = 1 Point</b>\n"
+    f"Example: ₹{RUPEES_PER_POINT * 10} → 10 Points\n\n"
+    "After payment, upload your screenshot proof here."
+)
+
 
     send_message(chat_id, msg, parse_mode="HTML", reply_markup={"inline_keyboard": buttons})
 
