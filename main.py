@@ -83,6 +83,9 @@ if not TOKEN:
 
 
 
+KUKUPAY_API_KEY = os.getenv("KUKUPAY_API_KEY", "axMSq3oSEEhrYvWNjXeCavGQisdxaY1U")
+KUKUPAY_WEBHOOK_URL = os.getenv("KUKUPAY_WEBHOOK_URL", f"{SELF_URL}/kukupay_webhook")
+KUKUPAY_RETURN_URL = os.getenv("KUKUPAY_RETURN_URL", "https://t.me/YourBotUsername")
 
 
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "default-secret").strip()
@@ -823,6 +826,61 @@ def webhook() -> Any:
                 send_message(chat_id, "⚠️ Unable to fetch referral data. Try again later.")
             return jsonify(ok=True)
 
+        elif data.startswith("kukupay_"):
+            amount = int(data.split("_")[1])
+            order_id = f"ORD-{user_id}-{int(time.time())}"
+            phone = "9999999999"  # ⚠️ Replace with user's real phone if available
+
+            payload = {
+                "api_key": KUKUPAY_API_KEY,
+                "amount": amount,
+                "phone": phone,
+                "webhook_url": KUKUPAY_WEBHOOK_URL,
+                "return_url": KUKUPAY_RETURN_URL,
+                "order_id": order_id,
+            }
+            headers = {"Content-Type": "application/json"}
+
+            try:
+                resp = session.post("https://kukupay.pro/pay/create", json=payload, headers=headers, timeout=15)
+                data = resp.json()
+                if data.get("status") == 200:
+                    payment_url = data.get("payment_url")
+                    # save in Supabase
+                    if sb:
+                        sb.table("payments").insert({
+                            "user_id": user_id,
+                            "chat_id": chat_id,
+                            "amount": amount,
+                            "points": amount // 10,
+                            "order_id": order_id,
+                            "status": "pending",
+                            "created_at": datetime.now(timezone.utc).isoformat()
+                        }).execute()
+                    send_message(
+                        chat_id,
+                        f"💳 *Payment Link Generated!*\n\n"
+                        f"Amount: ₹{amount}\n"
+                        f"Points: +{amount // 10}\n\n"
+                        "👇 Tap below to complete your payment:",
+                        parse_mode="Markdown",
+                        reply_markup={"inline_keyboard": [[{"text": "💸 Pay Now", "url": payment_url}]]}
+                    )
+                else:
+                    send_message(chat_id, "⚠️ Failed to create payment link. Try again later.")
+            except Exception as e:
+                log.exception("KukuPay API error: %s", e)
+                send_message(chat_id, "⚠️ Payment creation failed. Try again later.")
+            return jsonify(ok=True)
+
+
+
+
+
+
+
+
+
 
         elif data.startswith("check_payment_"):
             link_id = data.split("_", 2)[2]
@@ -1090,22 +1148,25 @@ def handle_stats(chat_id: int, user_id: int) -> None:
 
 
 def handle_deposit(chat_id: int, user_id: int):
-    """Show deposit options and generate Razorpay link."""
+    """Show deposit options using KukuPay."""
     amounts = [
-        {"label": "₹10 → +1 Point", "value": 10},
-        {"label": "₹50 → +5 Points", "value": 50},
-        {"label": "₹100 → +10 Points", "value": 100},
-        {"label": "₹200 → +20 Points", "value": 200},
+        {"label": "₹100 → +10 Points", "value": 100, "points": 10},
+        {"label": "₹200 → +20 Points", "value": 200, "points": 20},
+        {"label": "₹500 → +50 Points", "value": 500, "points": 50},
     ]
+
     buttons = [
-        [{"text": a["label"], "callback_data": f"deposit_{a['value']}"}] for a in amounts
+        [{"text": a["label"], "callback_data": f"kukupay_{a['value']}"}]
+        for a in amounts
     ]
+
     send_message(
         chat_id,
         "💳 *Deposit Points*\n\nSelect an amount to add points:",
         parse_mode="Markdown",
         reply_markup={"inline_keyboard": buttons},
     )
+
 
 
 def handle_list_admins(chat_id: int, user_id: int) -> None:
@@ -1386,7 +1447,29 @@ else:
     log.info("Keepalive ping thread disabled by env.")
 
 
+@app.route("/kukupay_webhook", methods=["POST"])
+def kukupay_webhook():
+    data = request.get_json(force=True, silent=True)
+    if not data:
+        return jsonify(ok=False, error="no data")
 
+    order_id = data.get("order_id")
+    status = data.get("status", "").lower()
+    amount = float(data.get("amount", 0))
+
+    if status == "success" and sb:
+        try:
+            res = sb.table("payments").select("user_id, chat_id").eq("order_id", order_id).limit(1).execute()
+            if res.data:
+                user_id = res.data[0]["user_id"]
+                chat_id = res.data[0]["chat_id"]
+                points = int(amount // 10)
+                db_add_points(user_id, points)
+                sb.table("payments").update({"status": "paid"}).eq("order_id", order_id).execute()
+                send_message(chat_id, f"✅ Payment of ₹{amount} received! +{points} points added 🎉", parse_mode="Markdown")
+        except Exception as e:
+            log.exception("KukuPay webhook error: %s", e)
+    return jsonify(ok=True)
 
 
 
