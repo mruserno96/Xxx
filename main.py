@@ -78,15 +78,11 @@ print("DEBUG_SUPABASE_URL =", SUPABASE_URL)
 print("DEBUG_SUPABASE_KEY =", SUPABASE_KEY[:10] + "...")
 
 supabase: Optional[Client] = None
-if SUPABASE_URL and SUPABASE_KEY and create_client:
-    try:
-        supabase = create_client(SUPABASE_URL, SUPABASE_KEY)  # type: ignore
-        log.info("✅ Supabase client initialized successfully!")
-    except Exception as e:
-        log.exception("❌ Supabase init failed: %s", e)
-else:
-    log.warning("⚠️ Supabase not configured — missing URL or key!")
-
+try:
+    supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+    log.info("✅ Supabase client initialized successfully!")
+except Exception as e:
+    log.exception("❌ Supabase init failed: %s", e)
 # ---------------------------------------------------------------------
 # Telegram API
 # ---------------------------------------------------------------------
