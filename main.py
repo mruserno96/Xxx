@@ -90,7 +90,9 @@ KUKUPAY_API_KEY = os.getenv("KUKUPAY_API_KEY", "axMSq3oSEEhrYvWNjXeCavGQisdxaY1U
 KUKUPAY_WEBHOOK_URL = os.getenv("KUKUPAY_WEBHOOK_URL", f"{SELF_URL}/kukupay_webhook")
 KUKUPAY_RETURN_URL = os.getenv("KUKUPAY_RETURN_URL", "https://t.me/YourBotUsername")
 
-
+print("DEBUG_KUKUPAY_KEY =", os.getenv("KUKUPAY_API_KEY"))
+print("DEBUG_KUKUPAY_WEBHOOK =", os.getenv("KUKUPAY_WEBHOOK_URL"))
+print("DEBUG_KUKUPAY_RETURN =", os.getenv("KUKUPAY_RETURN_URL"))
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "default-secret").strip()
 TELEGRAM_API = f"https://api.telegram.org/bot{TOKEN}"
 
@@ -890,7 +892,11 @@ def webhook() -> Any:
 
             try:
                 send_message(chat_id, "💳 Generating your payment link… Please wait ⏳")
-                log.info("➡️ Sending KukuPay create payload: %s", json.dumps(payload, indent=2))
+                log.warning(
+                    "KUKUPAY DEBUG — API_KEY: %s, payload: %s",
+                    KUKUPAY_API_KEY[:6] + "...",
+                    json.dumps(payload, indent=2)
+                )
 
                 resp = session.post(
                     "https://kukupay.pro/pay/create",
@@ -902,7 +908,10 @@ def webhook() -> Any:
 
                 # --- HTTP check ---
                 if resp.status_code != 200:
-                    send_message(chat_id, f"⚠️ Payment API returned HTTP {resp.status_code}. Try again later.")
+                    send_message(
+                        chat_id,
+                        f"⚠️ Payment API returned HTTP {resp.status_code}. Try again later."
+                    )
                     log.error("KukuPay HTTP error %s: %s", resp.status_code, resp.text)
                     return jsonify(ok=True)
 
@@ -914,13 +923,15 @@ def webhook() -> Any:
                     log.exception("KukuPay invalid JSON: %s", e)
                     return jsonify(ok=True)
 
-                # --- Check payment_url presence ---
-                if not data_json.get("payment_url"):
-                    send_message(chat_id, "⚠️ Failed to create payment link. Please retry in a minute.")
-                    log.warning("KukuPay response missing payment_url: %s", data_json)
-                    return jsonify(ok=True)
+                # --- Extract nested payment_url correctly ---
+                payment_url = None
+                if isinstance(data_json.get("data"), dict):
+                    payment_url = data_json["data"].get("payment_url")
 
-                payment_url = data_json["payment_url"]
+                if not payment_url:
+                    send_message(chat_id, "⚠️ Failed to create payment link. Please retry in a minute.")
+                    log.warning("KukuPay response missing or malformed: %s", data_json)
+                    return jsonify(ok=True)
 
                 # --- Save transaction ---
                 if sb:
@@ -940,7 +951,9 @@ def webhook() -> Any:
                 # --- Send user link ---
                 send_message(
                     chat_id,
-                    f"✅ *Payment Link Created!*\n\n💰 Amount: ₹{amount}\n🎯 Points: +{amount // 10}\n\n"
+                    f"✅ *Payment Link Created!*\n\n"
+                    f"💰 Amount: ₹{amount}\n"
+                    f"🎯 Points: +{amount // 10}\n\n"
                     "👇 Tap below to complete your payment:",
                     parse_mode="Markdown",
                     reply_markup={"inline_keyboard": [[{"text": "💸 Pay Now", "url": payment_url}]]}
@@ -956,6 +969,7 @@ def webhook() -> Any:
                 send_message(chat_id, "⚠️ Unexpected error creating payment link. Try again later.")
                 log.exception("KukuPay API error: %s", e)
             return jsonify(ok=True)
+
 
         # --- Razorpay legacy handler (optional) ---
         elif data.startswith("check_payment_"):
