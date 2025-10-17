@@ -45,6 +45,8 @@ import threading
 import time
 from datetime import datetime, timezone, date
 from typing import Dict, Any, Optional, List, Tuple
+from dotenv import load_dotenv
+load_dotenv()
 
 from flask import Flask, request, jsonify
 import requests
@@ -84,7 +86,6 @@ TELEGRAM_API = f"https://api.telegram.org/bot{TOKEN}"
 
 WEBHOOK_URL = os.getenv("WEBHOOK_URL", "").strip()
 SELF_URL = WEBHOOK_URL.rsplit("/webhook", 1)[0] if "/webhook" in WEBHOOK_URL else (os.getenv("SELF_URL", "").strip() or "https://example.com")
-
 # Channels / Groups gate (set the ones you need)
 CHANNEL1_INVITE_LINK = os.getenv("CHANNEL1_INVITE_LINK", "").strip()
 CHANNEL1_CHAT_ID = os.getenv("CHANNEL1_CHAT_ID", "").strip()
