@@ -275,7 +275,7 @@ def db_upsert_user(user: Dict[str, Any]) -> None:
             "language_code": user.get("language_code"),
             "last_seen": datetime.now(timezone.utc).isoformat(),
         }
-        supabase.table("users").upsert(row).execute()  # type: ignore
+        sb.table("users").upsert(row).execute()  # type: ignore
     except Exception as e:
         log.exception("db_upsert_user failed: %s", e)
 
@@ -359,7 +359,7 @@ def db_log_broadcast(desc: str, total: int, success: int, failed: int) -> None:
     if not sb:
         return
     try:
-        supabase.table("broadcasts").insert({
+        sb.table("broadcasts").insert({
             "text": desc,
             "total": total,
             "success": success,
@@ -371,7 +371,7 @@ def db_log_broadcast(desc: str, total: int, success: int, failed: int) -> None:
 
 def db_stats_counts() -> Tuple[int, int]:
     """Return total users and today's active users (by last_seen date)."""
-    if not supabase:
+    if not sb:
         return 0, 0
     try:
         res = sb.table("users").select("id,last_seen").execute()  # type: ignore
