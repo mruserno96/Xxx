@@ -98,7 +98,10 @@ TELEGRAM_API = f"https://api.telegram.org/bot{TOKEN}"
 
 WEBHOOK_URL = os.getenv("WEBHOOK_URL", "").strip()
 SELF_URL = WEBHOOK_URL.rsplit("/webhook", 1)[0] if "/webhook" in WEBHOOK_URL else (os.getenv("SELF_URL", "").strip() or "https://example.com")
-
+UPI_ID = os.getenv("UPI_ID", "2xclubwinsharma@fam")
+QR_IMAGE_URL = os.getenv("QR_IMAGE_URL", "https://alexcoder.shop/qer.jpg")
+POINTS_PER_RUPEE = int(os.getenv("POINTS_PER_RUPEE", "10"))  # e.g. ₹10 -> 100 pts
+MANUAL_AMOUNTS = [10, 50, 100, 200, 500]  # rupees
 # Channels / Groups gate (set the ones you need)
 CHANNEL1_INVITE_LINK = os.getenv("CHANNEL1_INVITE_LINK", "").strip()
 CHANNEL1_CHAT_ID = os.getenv("CHANNEL1_CHAT_ID", "").strip()
@@ -624,14 +627,92 @@ def webhook() -> Any:
                     pass
 
     # ----- Handle user messages -----
+       # ----- Handle user messages -----
     if "message" in update:
         msg = update["message"]
         chat = msg.get("chat", {})
         chat_id = chat.get("id")
         user = msg.get("from", {})
         user_id = user.get("id")
-        text = (msg.get("text") or "").strip()
         chat_type = chat.get("type")
+
+        # --- 📸 Check if awaiting manual screenshot upload ---
+        sess_for_photo = db_get_session(user_id)
+        if sess_for_photo and sess_for_photo.get("action") == "await_manual_screenshot":
+            # user must send a photo
+            if "photo" not in msg:
+                send_message(
+                    chat_id,
+                    "📸 Please upload your <b>payment screenshot</b> as a photo (not file).",
+                    parse_mode="HTML"
+                )
+                return jsonify(ok=True)
+
+            try:
+                amount = int(sess_for_photo.get("payload", {}).get("amount", 0))
+            except Exception:
+                amount = 0
+
+            if amount <= 0:
+                db_clear_session(user_id)
+                send_message(chat_id, "⚠️ Amount missing. Please pick a plan again with /deposit.")
+                return jsonify(ok=True)
+
+            # largest size photo entry
+            file_id = msg["photo"][-1]["file_id"]
+            order_id = f"MAN-{user_id}-{int(time.time())}"
+            points = amount * POINTS_PER_RUPEE
+
+            # insert a pending row into existing 'payments' table
+            # reuse 'link_id' to store screenshot file_id (no schema change needed)
+            if sb:
+                try:
+                    res = sb.table("payments").insert({
+                        "user_id": user_id,
+                        "chat_id": chat_id,
+                        "amount": amount,
+                        "points": points,
+                        "order_id": order_id,
+                        "status": "manual_submitted",   # pending owner review
+                        "link_id": file_id,             # store screenshot file_id here
+                        "created_at": datetime.now(timezone.utc).isoformat()
+                    }).execute()
+                    row = (res.data or [{}])[0]
+                    pid = row.get("id")
+                except Exception as e:
+                    log.exception("Insert manual payment failed: %s", e)
+                    pid = None
+            else:
+                pid = None
+
+            db_clear_session(user_id)
+            send_message(
+                chat_id,
+                "🧾 Thanks! Your screenshot has been submitted for review.\n"
+                "⏳ You’ll be notified after approval.",
+                reply_markup=keyboard_for(user_id)
+            )
+
+            # notify owner if set
+            if OWNER_ID:
+                try:
+                    pid_txt = f"#{pid}" if pid else order_id
+                    send_message(
+                        int(OWNER_ID),
+                        f"🆕 Manual deposit pending {pid_txt}\n"
+                        f"• User: <code>{user_id}</code>\n"
+                        f"• Amount: ₹{amount} → +{points} pts\n"
+                        f"• Order: {order_id}",
+                        parse_mode="HTML"
+                    )
+                    send_photo(int(OWNER_ID), file_id, caption=f"Manual deposit proof {pid_txt}")
+                except Exception as e:
+                    log.warning("Notify owner failed: %s", e)
+
+            return jsonify(ok=True)
+
+        # --- now handle text messages ---
+        text = (msg.get("text") or "").strip()
 
         # ignore groups/channels
         if chat_type != "private":
@@ -640,19 +721,19 @@ def webhook() -> Any:
 
         # Map bottom keyboard button presses to commands
         mapping = {
-        "🏠 Home": "/start",
-        "🏠 Home": "/home",
-        "ℹ️ Help": "/help",
-        "📊 Live Stats": "/stats",
-        "📢 Broadcast": "/broadcast",
-        "👑 List Admins": "/list_admins",
-        "➕ Add Admin": "/add_admin",
-        "💳 Deposit Points": "/deposit",
-        "➖ Remove Admin": "/remove_admin",
-        "📱 Number Info": "/numberinfo",
-        "💰 My Balance": "/balance",
-        "💎 Add Points to User": "/add_points",
-        "🎁 Refer & Earn": "/refer",
+            "🏠 Home": "/start",
+            "🏠 Home": "/home",
+            "ℹ️ Help": "/help",
+            "📊 Live Stats": "/stats",
+            "📢 Broadcast": "/broadcast",
+            "👑 List Admins": "/list_admins",
+            "➕ Add Admin": "/add_admin",
+            "💳 Deposit Points": "/deposit",
+            "➖ Remove Admin": "/remove_admin",
+            "📱 Number Info": "/numberinfo",
+            "💰 My Balance": "/balance",
+            "💎 Add Points to User": "/add_points",
+            "🎁 Refer & Earn": "/refer",
         }
 
         if text in mapping:
@@ -663,13 +744,9 @@ def webhook() -> Any:
         if sess:
             action = sess.get("action")
 
-
-
             if action in ("await_add_points_user", "await_add_points_value"):
-              handle_add_points_process(chat_id, user_id, text)
-              return jsonify(ok=True)
-
-
+                handle_add_points_process(chat_id, user_id, text)
+                return jsonify(ok=True)
 
             # ----- Broadcast pending -----
             if action == "broadcast_wait_message" and db_is_admin(user_id):
@@ -705,11 +782,9 @@ def webhook() -> Any:
                 return jsonify(ok=True)
 
             if action == "await_number":
-                # If user presses any known button or command, cancel number session
                 mapped_buttons = {"🏠 Home": "/start", "ℹ️ Help": "/help"}
                 if text in mapped_buttons or text.startswith("/"):
                     db_clear_session(user_id)
-                    # re-route to the actual command handler
                     cmd = mapped_buttons.get(text, text)
                     if cmd == "/start":
                         handle_start(chat_id, user_id)
@@ -717,7 +792,6 @@ def webhook() -> Any:
                         handle_help(chat_id, user_id)
                     return jsonify(ok=True)
 
-                # Otherwise expect a 10-digit number
                 num = "".join(ch for ch in text if ch.isdigit())
                 if len(num) != 10:
                     send_message(
@@ -730,26 +804,18 @@ def webhook() -> Any:
                     )
                     return jsonify(ok=True)
 
-                # valid 10-digit — clear session then process
                 db_clear_session(user_id)
                 handle_num(chat_id, num, user_id)
                 return jsonify(ok=True)
 
-
-
-           
-
-        # membership gating for all commands and text
+        # membership gating
         if text.startswith("/"):
             cmd = text.split()[0].lower()
-            if cmd in ("/start", "/help"):
-                pass
-            else:
+            if cmd not in ("/start", "/help"):
                 if not check_membership_and_prompt(chat_id, user_id):
                     return jsonify(ok=True)
 
-        # Command routing
-
+        # command routing
         if text.startswith("/start"):
             handle_start(chat_id, user_id)
         elif text.startswith("/balance"):
@@ -761,7 +827,7 @@ def webhook() -> Any:
         elif text.startswith("/refer"):
             handle_refer(chat_id, user_id)
         elif text.startswith("/help"):
-            handle_help(chat_id, user_id)        
+            handle_help(chat_id, user_id)
         elif text.startswith("/home"):
             handle_home(chat_id, user_id)
         elif text.startswith("/stats"):
@@ -774,7 +840,7 @@ def webhook() -> Any:
             handle_remove_admin(chat_id, user_id)
         elif text.startswith("/broadcast"):
             handle_broadcast(chat_id, user_id)
-        elif text.startswith("/numberinfo"):  # NEW button flow
+        elif text.startswith("/numberinfo"):
             handle_numberinfo(chat_id, user_id)
         elif text.startswith("/num"):
             parts = text.split()
@@ -787,10 +853,10 @@ def webhook() -> Any:
             else:
                 handle_num(chat_id, parts[1], user_id)
         else:
-            # For any free text, if not in session, still enforce membership
             if not check_membership_and_prompt(chat_id, user_id):
                 return jsonify(ok=True)
             send_message(chat_id, "Use the 📱 Number Info button or type /help.", reply_markup=keyboard_for(user_id))
+
         return jsonify(ok=True)
 
     # ----- Handle callbacks (only join retry) -----
@@ -854,6 +920,99 @@ def webhook() -> Any:
             answer_callback(callback_id, text="✅ Link copied! Share it with your friends.", show_alert=True)
             return jsonify(ok=True)
 
+
+        # --- Owner approve manual ---
+        elif data.startswith("approve_"):
+            if role_for(user_id) != "owner":
+                answer_callback(callback_id, "Not allowed.", show_alert=True)
+                return jsonify(ok=True)
+            try:
+                pid = int(data.split("_", 1)[1])
+            except Exception:
+                answer_callback(callback_id, "Invalid ID.", show_alert=True)
+                return jsonify(ok=True)
+
+            if not sb:
+                answer_callback(callback_id, "DB unavailable.", show_alert=True)
+                return jsonify(ok=True)
+
+            try:
+                # fetch row
+                res = sb.table("payments").select("*").eq("id", pid).limit(1).execute()
+                row = (res.data or [None])[0]
+                if not row:
+                    answer_callback(callback_id, "Not found.", show_alert=True)
+                    return jsonify(ok=True)
+
+                if row.get("status") != "manual_submitted":
+                    answer_callback(callback_id, "Already processed.", show_alert=True)
+                    return jsonify(ok=True)
+
+                uid = row["user_id"]
+                pts = int(row["points"])
+
+                # add points
+                db_add_points(uid, pts)
+                # update status
+                sb.table("payments").update({"status": "manual_approved"}).eq("id", pid).execute()
+
+                # notify user
+                try:
+                    send_message(uid, f"🎉 Manual deposit approved! +{pts} points added.", parse_mode="Markdown")
+                except Exception as e:
+                    log.warning("Notify user approve failed: %s", e)
+
+                answer_callback(callback_id, "Approved ✅", show_alert=False)
+                send_message(chat_id, f"✅ Approved deposit #{pid}.", reply_markup=keyboard_for(user_id))
+            except Exception as e:
+                log.exception("Approve failed: %s", e)
+                answer_callback(callback_id, "Error approving.", show_alert=True)
+            return jsonify(ok=True)
+
+        # --- Owner reject manual ---
+        elif data.startswith("reject_"):
+            if role_for(user_id) != "owner":
+                answer_callback(callback_id, "Not allowed.", show_alert=True)
+                return jsonify(ok=True)
+            try:
+                pid = int(data.split("_", 1)[1])
+            except Exception:
+                answer_callback(callback_id, "Invalid ID.", show_alert=True)
+                return jsonify(ok=True)
+
+            if not sb:
+                answer_callback(callback_id, "DB unavailable.", show_alert=True)
+                return jsonify(ok=True)
+
+            try:
+                res = sb.table("payments").select("*").eq("id", pid).limit(1).execute()
+                row = (res.data or [None])[0]
+                if not row:
+                    answer_callback(callback_id, "Not found.", show_alert=True)
+                    return jsonify(ok=True)
+
+                if row.get("status") != "manual_submitted":
+                    answer_callback(callback_id, "Already processed.", show_alert=True)
+                    return jsonify(ok=True)
+
+                uid = row["user_id"]
+
+                sb.table("payments").update({"status": "manual_rejected"}).eq("id", pid).execute()
+
+                try:
+                    send_message(uid, "❌ Manual deposit rejected. Please contact support if you believe this is a mistake.")
+                except Exception as e:
+                    log.warning("Notify user reject failed: %s", e)
+
+                answer_callback(callback_id, "Rejected ❌", show_alert=False)
+                send_message(chat_id, f"❌ Rejected deposit #{pid}.", reply_markup=keyboard_for(user_id))
+            except Exception as e:
+                log.exception("Reject failed: %s", e)
+                answer_callback(callback_id, "Error rejecting.", show_alert=True)
+            return jsonify(ok=True)
+
+
+
         elif data.startswith("my_refs_"):
             try:
                 res = sb.table("referrals").select("*").eq("referrer_id", user_id).execute()
@@ -873,6 +1032,43 @@ def webhook() -> Any:
                 log.exception("Failed to fetch referrals: %s", e)
                 send_message(chat_id, "⚠️ Unable to fetch referral data. Try again later.")
             return jsonify(ok=True)
+
+
+
+        elif text.startswith("/review"):
+            handle_review_manual(chat_id, user_id)
+
+        # --- Manual deposit: choose amount ---
+        elif data.startswith("manual_"):
+            try:
+                amount = int(data.split("_", 1)[1])
+            except Exception:
+                answer_callback(callback_id, "Invalid amount.", show_alert=True)
+                return jsonify(ok=True)
+
+            # set session so next photo they send is captured as proof
+            db_set_session(user_id, "await_manual_screenshot", {"amount": amount})
+
+            pts = amount * POINTS_PER_RUPEE
+            txt = (
+                "✅ Plan selected!\n\n"
+                f"• Amount: ₹{amount}\n"
+                f"• Points you’ll receive after approval: +{pts}\n\n"
+                f"Now <b>pay to UPI</b>: <code>{UPI_ID}</code>\n"
+                "Then <b>send/upload your payment screenshot</b> here.\n\n"
+                "Tips:\n"
+                "• Make sure txn id / UPI ref is visible.\n"
+                "• If you selected the wrong plan, just tap another amount."
+            )
+            send_message(chat_id, txt, parse_mode="HTML", reply_markup=keyboard_for(user_id))
+            answer_callback(callback_id, "OK")
+            return jsonify(ok=True)
+
+
+
+
+
+
 
         # --- 💳 KukuPay Payment Creation ---
         elif data.startswith("kukupay_"):
@@ -1098,7 +1294,68 @@ def handle_start(chat_id: int, user_id: int) -> None:
     )
     send_message(chat_id, welcome, parse_mode="Markdown", reply_markup=keyboard_for(user_id))
 
+def handle_review_manual(chat_id: int, user_id: int):
+    if role_for(user_id) != "owner":
+        send_message(chat_id, "❌ Only owner can review deposits.", reply_markup=keyboard_for(user_id))
+        return
 
+    if not sb:
+        send_message(chat_id, "⚠️ Supabase not available.")
+        return
+
+    try:
+        res = (
+            sb.table("payments")
+            .select("*")
+            .eq("status", "manual_submitted")
+            .order("created_at", desc=True)
+            .limit(10)
+            .execute()
+        )
+        rows = res.data or []
+    except Exception as e:
+        log.exception("Fetch manual_submitted failed: %s", e)
+        rows = []
+
+    if not rows:
+        send_message(chat_id, "📭 No pending manual deposits.", reply_markup=keyboard_for(user_id))
+        return
+
+    for r in rows:
+        pid = r.get("id")
+        uid = r.get("user_id")
+        amt = r.get("amount")
+        pts = r.get("points")
+        oid = r.get("order_id")
+        ss  = r.get("link_id")  # screenshot file_id stored here
+
+        cap = (
+            f"🧾 <b>Pending Manual Deposit</b>\n"
+            f"• ID: <code>{pid}</code>\n"
+            f"• User: <code>{uid}</code>\n"
+            f"• Amount: ₹{amt}\n"
+            f"• Points: +{pts}\n"
+            f"• Order: {oid}\n\n"
+            f"Approve or reject below."
+        )
+
+        kb = {
+            "inline_keyboard": [
+                [
+                    {"text": "✅ Approve", "callback_data": f"approve_{pid}"},
+                    {"text": "❌ Reject",  "callback_data": f"reject_{pid}"},
+                ]
+            ]
+        }
+
+        # try sending screenshot too
+        try:
+            if ss:
+                send_photo(chat_id, ss, caption=cap, reply_markup=kb)
+            else:
+                send_message(chat_id, cap, parse_mode="HTML", reply_markup=kb)
+        except Exception:
+            send_message(chat_id, cap, parse_mode="HTML", reply_markup=kb)
 
 def handle_help(chat_id: int, user_id: Optional[int] = None) -> None:
     if user_id and not check_membership_and_prompt(chat_id, user_id):
@@ -1317,27 +1574,44 @@ def handle_stats(chat_id: int, user_id: int) -> None:
     )
     send_message(chat_id, txt, parse_mode="Markdown", reply_markup=keyboard_for(user_id))
 
-
 def handle_deposit(chat_id: int, user_id: int):
-    """Show deposit options using KukuPay."""
-    amounts = [
-        {"label": "₹100 → +10 Points", "value": 100, "points": 10},
-        {"label": "₹200 → +20 Points", "value": 200, "points": 20},
-        {"label": "₹500 → +50 Points", "value": 500, "points": 50},
-    ]
+    """
+    Manual deposit via UPI + QR.
+    1) Show QR + UPI instructions.
+    2) Show amount choices (₹10, ₹50, ₹100, ₹200, ₹500).
+    3) After payment, user uploads screenshot for owner approval.
+    """
+    # show QR image first (Telegram can fetch by URL)
+    try:
+        caption = (
+            f"💳 <b>Manual Deposit</b>\n"
+            f"Scan & Pay via UPI to: <code>{UPI_ID}</code>\n\n"
+            f"• After payment, tap a plan below and upload your screenshot.\n"
+            f"• Points rate: <b>1₹ = {POINTS_PER_RUPEE} points</b>\n"
+            f"• Example: ₹100 ⇒ +{100 * POINTS_PER_RUPEE} points"
+        )
+        send_photo(chat_id, QR_IMAGE_URL, caption=caption, reply_markup=None)
+    except Exception as e:
+        log.warning("Could not send QR image: %s", e)
+        send_message(chat_id, f"Scan & Pay UPI: <code>{UPI_ID}</code>", parse_mode="HTML")
 
+    # make amount buttons (₹X -> +X*rate points)
     buttons = [
-        [{"text": a["label"], "callback_data": f"kukupay_{a['value']}"}]
-        for a in amounts
+        [
+            {
+                "text": f"₹{amt} → +{amt * POINTS_PER_RUPEE} pts",
+                "callback_data": f"manual_{amt}",
+            }
+        ]
+        for amt in MANUAL_AMOUNTS
     ]
 
     send_message(
         chat_id,
-        "💳 *Deposit Points*\n\nSelect an amount to add points:",
-        parse_mode="Markdown",
+        "Select an amount, pay to the UPI above, then upload your screenshot for approval:",
         reply_markup={"inline_keyboard": buttons},
+        parse_mode="HTML",
     )
-
 
 
 def handle_list_admins(chat_id: int, user_id: int) -> None:
