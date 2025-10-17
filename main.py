@@ -1000,7 +1000,7 @@ def webhook() -> Any:
                 sb.table("payments").update({"status": "manual_rejected"}).eq("id", pid).execute()
 
                 try:
-                    send_message(uid, "❌ Manual deposit rejected. Please contact support if you believe this is a mistake.")
+                    send_message(uid, "❌ Manual deposit rejected. Please contact support if you believe this is a mistake. @GodAlexMM")
                 except Exception as e:
                     log.warning("Notify user reject failed: %s", e)
 
@@ -1035,38 +1035,40 @@ def webhook() -> Any:
 
 
 
-        elif text.startswith("/review"):
-            handle_review_manual(chat_id, user_id)
+      
 
         # --- Manual deposit: choose amount ---
-        elif data.startswith("manual_"):
-            try:
-                amount = int(data.split("_", 1)[1])
-            except Exception:
-                answer_callback(callback_id, "Invalid amount.", show_alert=True)
-                return jsonify(ok=True)
+  
 
-            # set session so next photo they send is captured as proof
-            db_set_session(user_id, "await_manual_screenshot", {"amount": amount})
-
-            pts = amount * POINTS_PER_RUPEE
-            txt = (
-                "✅ Plan selected!\n\n"
-                f"• Amount: ₹{amount}\n"
-                f"• Points you’ll receive after approval: +{pts}\n\n"
-                f"Now <b>pay to UPI</b>: <code>{UPI_ID}</code>\n"
-                "Then <b>send/upload your payment screenshot</b> here.\n\n"
-                "Tips:\n"
-                "• Make sure txn id / UPI ref is visible.\n"
-                "• If you selected the wrong plan, just tap another amount."
-            )
-            send_message(chat_id, txt, parse_mode="HTML", reply_markup=keyboard_for(user_id))
-            answer_callback(callback_id, "OK")
+    elif data.startswith("manual_"):
+        try:
+            amount = int(data.split("_", 1)[1])
+        except Exception:
+            answer_callback(callback_id, "Invalid amount.", show_alert=True)
             return jsonify(ok=True)
 
+        # set session so next photo they send is captured as proof
+        db_set_session(user_id, "await_manual_screenshot", {"amount": amount})
 
+        pts = amount * POINTS_PER_RUPEE
 
+        caption = (
+            f"💳 <b>Deposit ₹{amount}</b>\n"
+            f"━━━━━━━━━━━━━━━\n\n"
+            f"Scan & Pay via any UPI app to:\n"
+            f"<code>{UPI_ID}</code>\n\n"
+            f"💰 You'll receive <b>+{pts} points</b> after payment.\n\n"
+            "🧾 After sending payment, upload your payment screenshot here.\n\n"
+            "<i>Make sure the transaction ID is visible.</i>"
+        )
 
+        try:
+            send_photo(chat_id, QR_IMAGE_URL, caption=caption, reply_markup=None)
+        except Exception:
+            send_message(chat_id, caption, parse_mode="HTML")
+
+        answer_callback(callback_id, text="UPI details sent!")
+        return jsonify(ok=True)
 
 # ---------------------------------------------------------------------
 # Command Handlers
@@ -1425,41 +1427,31 @@ def handle_stats(chat_id: int, user_id: int) -> None:
 
 def handle_deposit(chat_id: int, user_id: int):
     """
-    Manual deposit via UPI + QR.
-    1) Show QR + UPI instructions.
-    2) Show amount choices (₹10, ₹50, ₹100, ₹200, ₹500).
-    3) After payment, user uploads screenshot for owner approval.
+    Deposit flow (reversed): 
+    1️⃣ Show fancy inline amount buttons first.
+    2️⃣ After user selects an amount, show QR + UPI + payment info.
     """
-    # show QR image first (Telegram can fetch by URL)
-    try:
-        caption = (
-            f"💳 <b>Manual Deposit</b>\n"
-            f"Scan & Pay via UPI to: <code>{UPI_ID}</code>\n\n"
-            f"• After payment, tap a plan below and upload your screenshot.\n"
-            f"• Points rate: <b>1₹ = {POINTS_PER_RUPEE} points</b>\n"
-            f"• Example: ₹100 ⇒ +{100 * POINTS_PER_RUPEE} points"
-        )
-        send_photo(chat_id, QR_IMAGE_URL, caption=caption, reply_markup=None)
-    except Exception as e:
-        log.warning("Could not send QR image: %s", e)
-        send_message(chat_id, f"Scan & Pay UPI: <code>{UPI_ID}</code>", parse_mode="HTML")
-
-    # make amount buttons (₹X -> +X*rate points)
     buttons = [
         [
-            {
-                "text": f"₹{amt} → +{amt * POINTS_PER_RUPEE} pts",
-                "callback_data": f"manual_{amt}",
-            }
+            {"text": f"₹{amt} → +{amt * POINTS_PER_RUPEE} pts", "callback_data": f"manual_{amt}"}
         ]
         for amt in MANUAL_AMOUNTS
     ]
 
+    msg = (
+        "💳 <b>Deposit Points</b>\n"
+        "━━━━━━━━━━━━━━━\n\n"
+        "Please choose an amount to deposit 👇\n"
+        f"Each ₹1 gives you <b>{POINTS_PER_RUPEE} points</b>.\n\n"
+        "💡 Example: ₹100 = +1000 points\n\n"
+        "After selecting an amount, you'll see the QR code and UPI details for payment."
+    )
+
     send_message(
         chat_id,
-        "Select an amount, pay to the UPI above, then upload your screenshot for approval:",
-        reply_markup={"inline_keyboard": buttons},
+        msg,
         parse_mode="HTML",
+        reply_markup={"inline_keyboard": buttons}
     )
 
 
