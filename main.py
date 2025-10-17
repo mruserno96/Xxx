@@ -89,7 +89,9 @@ app = Flask(__name__)
 TOKEN = os.getenv("TELEGRAM_TOKEN", "").strip()
 if not TOKEN:
     log.warning("⚠️ TELEGRAM_TOKEN is empty! Telegram calls will fail.")
-
+print("DEBUG_ENV_SUPABASE_URL:", os.getenv("SUPABASE_URL"))
+print("DEBUG_ENV_SERVICE_ROLE:", os.getenv("SUPABASE_SERVICE_ROLE"))
+print("DEBUG_ENV_ANON_KEY:", os.getenv("SUPABASE_ANON_KEY"))
 KUKUPAY_API_KEY = os.getenv("KUKUPAY_API_KEY", "").strip()
 KUKUPAY_RETURN_URL = os.getenv("KUKUPAY_RETURN_URL", "").strip()
 KUKUPAY_WEBHOOK_SECRET = os.getenv("KUKUPAY_WEBHOOK_SECRET", "").strip()
