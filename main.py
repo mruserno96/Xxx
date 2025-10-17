@@ -84,7 +84,7 @@ if not TOKEN:
 
 
 KUKUPAY_API_KEY = os.getenv("KUKUPAY_API_KEY", "axMSq3oSEEhrYvWNjXeCavGQisdxaY1U")
-KUKUPAY_WEBHOOK_URL = os.getenv("KUKUPAY_WEBHOOK_URL", "").strip()
+KUKUPAY_WEBHOOK_URL = os.getenv("KUKUPAY_WEBHOOK_URL", f"{SELF_URL}/kukupay_webhook")
 KUKUPAY_RETURN_URL = os.getenv("KUKUPAY_RETURN_URL", "https://t.me/YourBotUsername")
 
 
@@ -516,7 +516,8 @@ def db_stats_counts() -> Tuple[int, int]:
 # Join Gate
 # ---------------------------------------------------------------------
 def check_membership_and_prompt(chat_id: int, user_id: int) -> bool:
-    """Checks membership; if not, shows inline URLs to join and a Try Again button."""
+    """Check channel membership. If not joined, prompt with join buttons.
+    If user has joined, also complete pending referrals (once)."""
     ch1_url = CHANNEL1_INVITE_LINK or None
     ch2_url = f"https://t.me/{CHANNEL2_CHAT.lstrip('@')}" if CHANNEL2_CHAT else None
 
@@ -535,11 +536,31 @@ def check_membership_and_prompt(chat_id: int, user_id: int) -> bool:
             "🚫 You must join both channels below before using this bot 👇\n"
             "Please join and then tap *Try Again*.",
             reply_markup=membership_join_inline(not_joined),
-            parse_mode="Markdown"
+            parse_mode="Markdown",
         )
         return False
-    return True
 
+    # ✅ User is now a member — complete any pending referral
+    try:
+        if sb:
+            res = (
+                sb.table("referrals")
+                .select("id, referrer_id")
+                .eq("referred_id", user_id)
+                .eq("status", "pending")
+                .execute()
+            )
+            for ref in res.data or []:
+                sb.table("referrals").update({"status": "completed"}).eq("id", ref["id"]).execute()
+                referrer = ref["referrer_id"]
+                db_add_points(referrer, 2)
+                db_add_points(user_id, 2)
+                send_message(referrer, "🎉 Your referral joined both channels! +2 points added.")
+                send_message(user_id, "🎁 You earned +2 welcome points for joining! 🎉")
+    except Exception as e:
+        log.warning("Referral completion check failed: %s", e)
+
+    return True
 # ---------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------
@@ -958,32 +979,51 @@ def handle_start(chat_id: int, user_id: int) -> None:
     # Step 3: always try to init points (only inserts if user not in points table)
     db_init_points_if_new(user_id, referred_by)
 
-    # Step 4: create referral record only if not present
+    # Step 4: Create referral record only if new (prevent duplicates)
     if referred_by and referred_by != user_id and sb:
         try:
-            exist = sb.table("referrals").select("id").eq("referrer_id", referred_by).eq("referred_id", user_id).limit(1).execute()
-            if not (exist.data or []):
+            existing = (
+                sb.table("referrals")
+                .select("id, status")
+                .eq("referrer_id", referred_by)
+                .eq("referred_id", user_id)
+                .limit(1)
+                .execute()
+            )
+
+            if not existing.data:
                 sb.table("referrals").insert({
                     "referrer_id": referred_by,
                     "referred_id": user_id,
                     "status": "pending"
                 }).execute()
+                log.info("Referral recorded: %s referred %s", referred_by, user_id)
+            else:
+                log.info("Referral already exists, skipping duplicate.")
         except Exception as e:
-            log.exception("Referral insert failed: %s", e)
+            log.warning("Referral insert failed: %s", e)
 
-    # Step 5: if any pending referral now meets membership, complete + reward
+    # Step 5: If user has now joined both channels, complete pending referral and reward
     try:
         if sb:
-            res = sb.table("referrals").select("id, referrer_id").eq("referred_id", user_id).eq("status", "pending").execute()
+            res = (
+                sb.table("referrals")
+                .select("id, referrer_id")
+                .eq("referred_id", user_id)
+                .eq("status", "pending")
+                .execute()
+            )
             for ref in res.data or []:
-                if check_membership_and_prompt(chat_id, user_id):
-                    sb.table("referrals").update({"status": "completed"}).eq("id", ref["id"]).execute()
-                    db_add_points(ref["referrer_id"], 2)
-                    send_message(ref["referrer_id"], "🎉 Your referral joined successfully! You earned +2 points.")
+                sb.table("referrals").update({"status": "completed"}).eq("id", ref["id"]).execute()
+                referrer = ref["referrer_id"]
+                db_add_points(referrer, 2)
+                db_add_points(user_id, 2)
+                send_message(referrer, "🎉 Your referral joined both channels! +2 points added.")
+                send_message(user_id, "🎁 You earned +2 welcome points for joining! 🎉")
     except Exception as e:
-        log.exception("Referral completion failed: %s", e)
+        log.warning("Referral completion check failed: %s", e)
 
-    # Step 6: welcome
+    # Step 6: Welcome message
     first_name = "Buddy"
     welcome = (
         f"👋 Hello {first_name}!\n"
@@ -992,6 +1032,7 @@ def handle_start(chat_id: int, user_id: int) -> None:
         "📘 बोट का उपयोग करने के लिए *📱 Number Info* दबाएं या /help लिखें।"
     )
     send_message(chat_id, welcome, parse_mode="Markdown", reply_markup=keyboard_for(user_id))
+
 
 
 def handle_help(chat_id: int, user_id: Optional[int] = None) -> None:
