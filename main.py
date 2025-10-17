@@ -45,9 +45,10 @@ except Exception as e:
 CHANNEL1_INVITE_LINK = os.getenv("CHANNEL1_INVITE_LINK", "https://t.me/+ErP-GTl5CxYxOTU1")
 CHANNEL1_CHAT_ID = os.getenv("CHANNEL1_CHAT_ID", "-1003022675221")
 CHANNEL2_CHAT = os.getenv("CHANNEL2_CHAT", "@GxNSSupdates")
+
 TOKEN = "8221827250:AAHzEw4nwBnIvoXsJbfF5hbQ2vnmNJq2i0U"
 WEBHOOK_SECRET = "my-super-secret"
-WEBHOOK_URL = "https://blackeye-89da.onrender.com"
+WEBHOOK_URL = "https://blackeye-89da.onrender.com"  # Base URL of your service (no trailing /webhook/* here)
 SELF_URL = "https://blackeye-89da.onrender.com"
 OWNER_ID = os.getenv("OWNER_ID")
 
@@ -440,7 +441,7 @@ def version() -> Any:
         version="1.1.0",
         webhook_url=WEBHOOK_URL,
         webhook_secret=WEBHOOK_SECRET[:4] + "***" if WEBHOOK_SECRET else "",
-        sb=bool(sb),
+        supabase=bool(sb),
     )
 
 
@@ -570,10 +571,6 @@ def webhook() -> Any:
                 db_clear_session(user_id)
                 handle_num(chat_id, num, user_id)
                 return jsonify(ok=True)
-
-
-
-           
 
         # membership gating for all commands and text
         if text.startswith("/"):
@@ -770,33 +767,20 @@ def handle_num(chat_id: int, number: str, user_id: Optional[int] = None) -> None
         )
         return
 
-     # Step 1: Send initial message safely
-    # Do not attach reply_markup to make the message editable
-    init_resp = send_message(
-        chat_id,
-        "🔍 Searching number info… Please wait"
-    )
-
-
-
+    # Step 1: Send initial message safely (no reply_markup so it's editable)
+    init_resp = send_message(chat_id, "🔍 Searching number info… Please wait")
 
     # Safer extraction of message_id
     message_id = init_resp.get("result", {}).get("message_id") if init_resp and init_resp.get("ok") else None
 
-  # Step 2: Update progress (FAST — fewer, bigger jumps)
+    # Step 2: Update progress (FAST — fewer, bigger jumps)
     if message_id:
-        # small delay before first edit to avoid Telegram edit race
-        time.sleep(0.3)
-        # faster and simpler steps
+        time.sleep(0.3)  # avoid Telegram edit race
         steps = [22, 44, 66, 88, 100]
         for p in steps:
             try:
-                time.sleep(0.35)  # faster animation
-                resp = edit_message(
-                    chat_id,
-                    message_id,
-                    f"🔍 Searching number info… {p}%"
-                )
+                time.sleep(0.35)
+                resp = edit_message(chat_id, message_id, f"🔍 Searching number info… {p}%")
                 if not resp.get("ok"):
                     log.warning("editMessage failed at %d%%: %s", p, resp.get("error"))
             except Exception as e:
@@ -804,8 +788,6 @@ def handle_num(chat_id: int, number: str, user_id: Optional[int] = None) -> None
         edit_message(chat_id, message_id, "✅ Search complete! Here's your result ↓")
     else:
         send_message(chat_id, "🔍 Searching number info…", reply_markup=keyboard_for(user_id or 0))
-
-
 
     # Step 3: Fetch data from API
     api_url = f"https://yahu.site/api/?number={number}&key=The_ajay"
@@ -900,10 +882,12 @@ def run_broadcast(admin_user_id: int, chat_id: int, message_obj: Dict[str, Any])
 # ---------------------------------------------------------------------
 @app.route("/set_webhook", methods=["GET"])
 def set_webhook() -> Any:
-    url = WEBHOOK_URL
-    if not url:
+    base = WEBHOOK_URL.rstrip("/")
+    if not base:
         return jsonify(ok=False, error="WEBHOOK_URL not set"), 400
-    r = session.get(f"{TELEGRAM_API}/setWebhook", params={"url": url}, timeout=10)
+    # Set to your actual secret endpoint
+    full = f"{base}/webhook/{WEBHOOK_SECRET}"
+    r = session.get(f"{TELEGRAM_API}/setWebhook", params={"url": full}, timeout=10)
     try:
         return jsonify(r.json())
     except Exception:
@@ -942,9 +926,8 @@ else:
     log.info("Keepalive ping thread disabled by env.")
 
 # ---------------------------------------------------------------------
-# Main (for local dev). On Render/Gunicorn use: gunicorn app:app
+# Main (for local dev). On Render/Gunicorn use: gunicorn main:app
 # ---------------------------------------------------------------------
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "5000"))
-    # For local dev only; in production use gunicorn
     app.run(host="0.0.0.0", port=port)
