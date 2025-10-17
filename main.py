@@ -940,6 +940,8 @@ def webhook() -> Any:
             answer_callback(callback_id, text="OK")
             return jsonify(ok=True)
 
+    # --- default fallback (handles edited_message, unknown updates, etc.) ---
+    return jsonify(ok=True)
 
 
 # ---------------------------------------------------------------------
