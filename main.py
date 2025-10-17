@@ -1042,13 +1042,13 @@ def webhook() -> Any:
 
         elif data.startswith("manual_"):
             try:
-               amount = int(data.split("_", 1)[1])
+                amount = int(data.split("_", 1)[1])
             except Exception:
-                answer_callback(callback_id, "Invalid amount.", show_alert=True)
-            return jsonify(ok=True)
+             answer_callback(callback_id, "Invalid amount.", show_alert=True)
+             return jsonify(ok=True)  # only return here if invalid
 
-    # Calculate points as per ₹10 = 1 point
-    points = amount // RUPEES_PER_POINT  # (Option A)
+    # ✅ Now this code actually runs:
+    points = amount // RUPEES_PER_POINT
 
     db_set_session(user_id, "await_manual_screenshot", {"amount": amount})
 
@@ -1069,7 +1069,6 @@ def webhook() -> Any:
 
     answer_callback(callback_id, text="UPI details sent!")
     return jsonify(ok=True)
-
 # ---------------------------------------------------------------------
 # Command Handlers
 # ---------------------------------------------------------------------
