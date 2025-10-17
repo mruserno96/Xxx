@@ -81,7 +81,9 @@ if not TOKEN:
 
 
 
-
+SELF_URL = WEBHOOK_URL.rsplit("/webhook", 1)[0] if "/webhook" in WEBHOOK_URL else (
+    os.getenv("SELF_URL", "").strip() or "https://example.com"
+)
 
 KUKUPAY_API_KEY = os.getenv("KUKUPAY_API_KEY", "axMSq3oSEEhrYvWNjXeCavGQisdxaY1U")
 KUKUPAY_WEBHOOK_URL = os.getenv("KUKUPAY_WEBHOOK_URL", f"{SELF_URL}/kukupay_webhook")
