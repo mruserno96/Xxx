@@ -1,43 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-NumberInfo Telegram Bot (Flask) — Production Ready
-==================================================
-
-Highlights
-----------
-- Reply keyboards (bottom) for owner/admin/user — now includes **📱 Number Info** for easy lookups (no /num needed).
-- Membership gate: checks user is a member of your group/channel(s); shows join links with inline URL buttons.
-- Broadcast: supports text, photo+caption, video+caption, document+caption (uses original file_id to forward).
-- Supabase persistence: users, admin roles, sessions (pending actions, including number-entry), broadcast logs.
-- Live stats: total users and today's active users.
-- Robust HTTP session with retries; webhook route; optional keepalive ping thread.
-- Safe for redeploy/restart — data stored in Supabase.
-- Clean structure; structured logging; helpful comments.
-- Render/Gunicorn friendly: no double-run, optional ping thread, health endpoints.
-
-Environment Variables
----------------------
-TELEGRAM_TOKEN=...
-WEBHOOK_URL=https://your-domain.com/webhook/<secret>
-WEBHOOK_SECRET=<secret>
-CHANNEL1_INVITE_LINK=https://t.me/+abcdef
-CHANNEL1_CHAT_ID=-1001234567890
-CHANNEL2_CHAT_ID_OR_USERNAME=@yourchan
-
-SUPABASE_URL=...
-SUPABASE_SERVICE_ROLE=...  (recommended)  OR  SUPABASE_ANON_KEY=... (limited)
-OWNER_ID=123456789
-
-# Optional:
-LOG_LEVEL=INFO              # DEBUG|INFO|WARNING|ERROR
-DISABLE_PING=1              # set to 1 to disable keepalive ping thread
-PING_INTERVAL_SECONDS=300   # default 300
-REQUEST_TIMEOUT_SECONDS=20  # default 20
+NumberInfo Telegram Bot (Flask) — Production Ready (No .env / No Render vars)
 """
 
 from __future__ import annotations
-
 import os
 import json
 import logging
@@ -45,9 +12,6 @@ import threading
 import time
 from datetime import datetime, timezone, date
 from typing import Dict, Any, Optional, List, Tuple
-from dotenv import load_dotenv
-load_dotenv()
-
 from flask import Flask, request, jsonify
 import requests
 from requests.adapters import HTTPAdapter, Retry
@@ -60,9 +24,42 @@ except Exception:  # pragma: no cover
     Client = object  # type: ignore
 
 # ---------------------------------------------------------------------
-# Logging (configurable via LOG_LEVEL)
+# Direct Configuration (hard-coded)
 # ---------------------------------------------------------------------
-LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+TOKEN = "8221827250:AAHzEw4nwBnIvoXsJbfF5hbQ2vnmNJq2i0U"
+WEBHOOK_SECRET = "my-super-secret"
+WEBHOOK_URL = "https://blackeye-89da.onrender.com"
+SELF_URL = "https://blackeye-89da.onrender.com"
+
+# Channels / Groups
+CHANNEL1_INVITE_LINK = "https://t.me/+ErP-GTl5CxYxOTU1"
+CHANNEL1_CHAT_ID = "-1003022675221"
+CHANNEL2_CHAT = "@GxNSSupdates"
+
+# Admin / Owner
+OWNER_ID = "8356178010"
+
+# Supabase
+SUPABASE_URL = "https://lawpdwfrsdgxidbsrrcy.supabase.co"
+SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imxhd3Bkd2Zyc2RneGlkYnNycmN5Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc2MDQ1MzgxOSwiZXhwIjoyMDc2MDI5ODE5fQ.BPRYZpC0oBly9YT_rMTyOHLo-9b3ZxCgUbGW1SKsRzY"
+
+# Payment integrations
+CASHFREE_CLIENT_ID = "1102192100315ab5202afbeb6a82912011"
+CASHFREE_CLIENT_SECRET = "cfsk_ma_prod_8c3692a863d18933b29e379ca70e3f11_80c9edbc"
+CASHFREE_ENV = "PROD"
+CASHFREE_WEBHOOK_SECRET = "F0dNF2$+@Sr~"
+
+KUKUPAY_API_KEY = "axMSq3oSEEhrYvWNjXeCavGQisdxaY1U"
+KUKUPAY_RETURN_URL = "https://t.me/OfficialBlackEyeBot"
+KUKUPAY_WEBHOOK_SECRET = "F0dNF2$+@Sr~"
+
+# Misc
+LOG_LEVEL = "DEBUG"
+PORT = 10000
+
+# ---------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------
 logging.basicConfig(
     level=getattr(logging, LOG_LEVEL, logging.INFO),
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
@@ -70,34 +67,13 @@ logging.basicConfig(
 log = logging.getLogger("numberinfo-bot")
 
 # ---------------------------------------------------------------------
-# Flask
+# Flask App
 # ---------------------------------------------------------------------
 app = Flask(__name__)
 
 # ---------------------------------------------------------------------
-# Config (env)
+# Supabase Init
 # ---------------------------------------------------------------------
-TOKEN = os.getenv("TELEGRAM_TOKEN", "").strip()
-if not TOKEN:
-    log.warning("TELEGRAM_TOKEN is empty! Telegram calls will fail.")
-
-WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "default-secret").strip()
-TELEGRAM_API = f"https://api.telegram.org/bot{TOKEN}"
-
-WEBHOOK_URL = os.getenv("WEBHOOK_URL", "").strip()
-SELF_URL = WEBHOOK_URL.rsplit("/webhook", 1)[0] if "/webhook" in WEBHOOK_URL else (os.getenv("SELF_URL", "").strip() or "https://example.com")
-# Channels / Groups gate (set the ones you need)
-CHANNEL1_INVITE_LINK = os.getenv("CHANNEL1_INVITE_LINK", "").strip()
-CHANNEL1_CHAT_ID = os.getenv("CHANNEL1_CHAT_ID", "").strip()
-CHANNEL2_CHAT = os.getenv("CHANNEL2_CHAT_ID_OR_USERNAME", "").strip()
-
-# Admin owner (bootstrap): this user_id is always treated as owner/admin
-OWNER_ID = os.getenv("OWNER_ID", "").strip()
-
-# Supabase
-SUPABASE_URL = os.getenv("SUPABASE_URL", "").strip()
-SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE", os.getenv("SUPABASE_ANON_KEY", "")).strip()
-
 supabase: Optional[Client] = None
 if SUPABASE_URL and SUPABASE_KEY and create_client:
     try:
@@ -106,7 +82,7 @@ if SUPABASE_URL and SUPABASE_KEY and create_client:
     except Exception as e:
         log.exception("❌ Supabase init failed: %s", e)
 else:
-    log.warning("⚠️ Supabase not configured — set SUPABASE_URL and SUPABASE_SERVICE_ROLE/ANON. Persistence disabled.")
+    log.warning("⚠️ Supabase not configured — missing URL or key")
 
 # Requests / Telegram session with retries
 REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT_SECONDS", "20"))
