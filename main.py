@@ -42,6 +42,9 @@ except Exception as e:
 # ---------------------------------------------------------------------
 # Telegram / Flask Basic Setup
 # ---------------------------------------------------------------------
+CHANNEL1_INVITE_LINK = os.getenv("CHANNEL1_INVITE_LINK", "https://t.me/+ErP-GTl5CxYxOTU1")
+CHANNEL1_CHAT_ID = os.getenv("CHANNEL1_CHAT_ID", "-1003022675221")
+CHANNEL2_CHAT = os.getenv("CHANNEL2_CHAT", "@GxNSSupdates")
 TOKEN = "8221827250:AAHzEw4nwBnIvoXsJbfF5hbQ2vnmNJq2i0U"
 WEBHOOK_SECRET = "my-super-secret"
 WEBHOOK_URL = "https://blackeye-89da.onrender.com"
@@ -276,7 +279,7 @@ def db_upsert_user(user: Dict[str, Any]) -> None:
             "language_code": user.get("language_code"),
             "last_seen": datetime.now(timezone.utc).isoformat(),
         }
-        supabase.table("users").upsert(row).execute()  # type: ignore
+        sb.table("users").upsert(row).execute()  # type: ignore
     except Exception as e:
         log.exception("db_upsert_user failed: %s", e)
 
