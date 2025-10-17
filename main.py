@@ -1040,35 +1040,35 @@ def webhook() -> Any:
         # --- Manual deposit: choose amount ---
   
 
-    elif data.startswith("manual_"):
-        try:
-            amount = int(data.split("_", 1)[1])
-        except Exception:
-            answer_callback(callback_id, "Invalid amount.", show_alert=True)
+        elif data.startswith("manual_"):
+            try:
+               amount = int(data.split("_", 1)[1])
+            except Exception:
+                answer_callback(callback_id, "Invalid amount.", show_alert=True)
             return jsonify(ok=True)
 
-        # set session so next photo they send is captured as proof
-        db_set_session(user_id, "await_manual_screenshot", {"amount": amount})
+    # Calculate points as per ₹10 = 1 point
+    points = amount // 10
 
-        pts = amount * POINTS_PER_RUPEE
+    db_set_session(user_id, "await_manual_screenshot", {"amount": amount})
 
-        caption = (
-            f"💳 <b>Deposit ₹{amount}</b>\n"
-            f"━━━━━━━━━━━━━━━\n\n"
-            f"Scan & Pay via any UPI app to:\n"
-            f"<code>{UPI_ID}</code>\n\n"
-            f"💰 You'll receive <b>+{pts} points</b> after payment.\n\n"
-            "🧾 After sending payment, upload your payment screenshot here.\n\n"
-            "<i>Make sure the transaction ID is visible.</i>"
-        )
+    caption = (
+        f"💳 <b>Deposit Details</b>\n"
+        f"━━━━━━━━━━━━━━━\n\n"
+        f"💰 Amount to Pay: <b>₹{amount}</b>\n"
+        f"🏅 You’ll Receive: <b>{points} points</b>\n\n"
+        f"📱 Pay to this UPI ID:\n<code>{UPI_ID}</code>\n\n"
+        f"🧾 After payment, upload your <b>payment screenshot</b> here.\n"
+        f"<i>Make sure the transaction ID is visible.</i>"
+    )
 
-        try:
-            send_photo(chat_id, QR_IMAGE_URL, caption=caption, reply_markup=None)
-        except Exception:
-            send_message(chat_id, caption, parse_mode="HTML")
+    try:
+        send_photo(chat_id, QR_IMAGE_URL, caption=caption)
+    except Exception:
+        send_message(chat_id, caption, parse_mode="HTML")
 
-        answer_callback(callback_id, text="UPI details sent!")
-        return jsonify(ok=True)
+    answer_callback(callback_id, text="UPI details sent!")
+    return jsonify(ok=True)
 
 # ---------------------------------------------------------------------
 # Command Handlers
@@ -1425,15 +1425,16 @@ def handle_stats(chat_id: int, user_id: int) -> None:
     )
     send_message(chat_id, txt, parse_mode="Markdown", reply_markup=keyboard_for(user_id))
 
+# ---- CLEANED UP DEPOSIT FLOW ----
 def handle_deposit(chat_id: int, user_id: int):
     """
-    Deposit flow (reversed): 
-    1️⃣ Show fancy inline amount buttons first.
-    2️⃣ After user selects an amount, show QR + UPI + payment info.
+    Clean deposit flow:
+    1️⃣ Shows amount options.
+    2️⃣ On click -> shows exact payable amount, points, QR & UPI.
     """
     buttons = [
         [
-            {"text": f"₹{amt} → +{amt * POINTS_PER_RUPEE} pts", "callback_data": f"manual_{amt}"}
+            {"text": f"₹{amt}", "callback_data": f"manual_{amt}"}
         ]
         for amt in MANUAL_AMOUNTS
     ]
@@ -1441,18 +1442,14 @@ def handle_deposit(chat_id: int, user_id: int):
     msg = (
         "💳 <b>Deposit Points</b>\n"
         "━━━━━━━━━━━━━━━\n\n"
-        "Please choose an amount to deposit 👇\n"
-        f"Each ₹1 gives you <b>{POINTS_PER_RUPEE} points</b>.\n\n"
-        "💡 Example: ₹100 = +1000 points\n\n"
-        "After selecting an amount, you'll see the QR code and UPI details for payment."
+        "Select the amount you wish to deposit 👇\n\n"
+        "Conversion Rate: <b>₹10 = 1 Point</b>\n"
+        "Example: ₹100 → 10 Points\n\n"
+        "After payment, upload your screenshot proof here."
     )
 
-    send_message(
-        chat_id,
-        msg,
-        parse_mode="HTML",
-        reply_markup={"inline_keyboard": buttons}
-    )
+    send_message(chat_id, msg, parse_mode="HTML", reply_markup={"inline_keyboard": buttons})
+
 
 
 def handle_list_admins(chat_id: int, user_id: int) -> None:
