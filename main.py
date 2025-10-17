@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-NumberInfo Telegram Bot (Flask) — Production Ready (No .env / No Render vars)
+NumberInfo Telegram Bot (Flask) — Hardcoded Configuration (no env, no Render)
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ except Exception:  # pragma: no cover
     Client = object  # type: ignore
 
 # ---------------------------------------------------------------------
-# Direct Configuration (hard-coded)
+# DIRECT CONFIG (✅ Hardcoded)
 # ---------------------------------------------------------------------
 TOKEN = "8221827250:AAHzEw4nwBnIvoXsJbfF5hbQ2vnmNJq2i0U"
 WEBHOOK_SECRET = "my-super-secret"
@@ -36,14 +36,19 @@ CHANNEL1_INVITE_LINK = "https://t.me/+ErP-GTl5CxYxOTU1"
 CHANNEL1_CHAT_ID = "-1003022675221"
 CHANNEL2_CHAT = "@GxNSSupdates"
 
-# Admin / Owner
+# Owner
 OWNER_ID = "8356178010"
 
 # Supabase
 SUPABASE_URL = "https://lawpdwfrsdgxidbsrrcy.supabase.co"
-SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imxhd3Bkd2Zyc2RneGlkYnNycmN5Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc2MDQ1MzgxOSwiZXhwIjoyMDc2MDI5ODE5fQ.BPRYZpC0oBly9YT_rMTyOHLo-9b3ZxCgUbGW1SKsRzY"
+SUPABASE_KEY = (
+    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9."
+    "eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imxhd3Bkd2Zyc2RneGlkYnNycmN5Iiwicm9sZSI6"
+    "InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc2MDQ1MzgxOSwiZXhwIjoyMDc2MDI5ODE5fQ."
+    "BPRYZpC0oBly9YT_rMTyOHLo-9b3ZxCgUbGW1SKsRzY"
+)
 
-# Payment integrations
+# Payments
 CASHFREE_CLIENT_ID = "1102192100315ab5202afbeb6a82912011"
 CASHFREE_CLIENT_SECRET = "cfsk_ma_prod_8c3692a863d18933b29e379ca70e3f11_80c9edbc"
 CASHFREE_ENV = "PROD"
@@ -53,12 +58,12 @@ KUKUPAY_API_KEY = "axMSq3oSEEhrYvWNjXeCavGQisdxaY1U"
 KUKUPAY_RETURN_URL = "https://t.me/OfficialBlackEyeBot"
 KUKUPAY_WEBHOOK_SECRET = "F0dNF2$+@Sr~"
 
-# Misc
+# Other settings
 LOG_LEVEL = "DEBUG"
 PORT = 10000
 
 # ---------------------------------------------------------------------
-# Logging
+# Logging setup
 # ---------------------------------------------------------------------
 logging.basicConfig(
     level=getattr(logging, LOG_LEVEL, logging.INFO),
@@ -67,22 +72,30 @@ logging.basicConfig(
 log = logging.getLogger("numberinfo-bot")
 
 # ---------------------------------------------------------------------
-# Flask App
+# Flask
 # ---------------------------------------------------------------------
 app = Flask(__name__)
 
 # ---------------------------------------------------------------------
 # Supabase Init
 # ---------------------------------------------------------------------
+print("DEBUG_SUPABASE_URL =", SUPABASE_URL)
+print("DEBUG_SUPABASE_KEY =", SUPABASE_KEY[:10] + "...")
+
 supabase: Optional[Client] = None
 if SUPABASE_URL and SUPABASE_KEY and create_client:
     try:
         supabase = create_client(SUPABASE_URL, SUPABASE_KEY)  # type: ignore
-        log.info("✅ Supabase client initialized")
+        log.info("✅ Supabase client initialized successfully!")
     except Exception as e:
         log.exception("❌ Supabase init failed: %s", e)
 else:
-    log.warning("⚠️ Supabase not configured — missing URL or key")
+    log.warning("⚠️ Supabase not configured — missing URL or key!")
+
+# ---------------------------------------------------------------------
+# Telegram API
+# ---------------------------------------------------------------------
+TELEGRAM_API = f"https://api.telegram.org/bot{TOKEN}"
 
 # Requests / Telegram session with retries
 REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT_SECONDS", "20"))
