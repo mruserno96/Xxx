@@ -79,6 +79,7 @@ TOKEN = os.getenv("TELEGRAM_TOKEN", "").strip()
 if not TOKEN:
     log.warning("TELEGRAM_TOKEN is empty! Telegram calls will fail.")
 
+WEBHOOK_URL = os.getenv("WEBHOOK_URL", "").strip()
 
 
 SELF_URL = WEBHOOK_URL.rsplit("/webhook", 1)[0] if "/webhook" in WEBHOOK_URL else (
