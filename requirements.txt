@@ -10,6 +10,7 @@ realtime==1.0.2
 storage3==0.5.3
 supafunc==0.2.2
 setuptools>=68.0.0
+python-dotenv==1.0.1
 
 # ✅ Payment libraries
 razorpay==1.4.2
