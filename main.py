@@ -15,13 +15,14 @@ from requests.adapters import HTTPAdapter, Retry
 from flask import Flask, request, jsonify
 
 # ---------------------------------------------------------------------
-# Supabase Setup (✅ compatible with Python 3.12)
+# Global constants (define first to avoid NameError)
 # ---------------------------------------------------------------------
-try:
-    from supabase import create_client, Client  # type: ignore
-except Exception:
-    create_client = None
-    Client = object  # type: ignore
+REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT_SECONDS", "20"))
+
+# ---------------------------------------------------------------------
+# Supabase Setup (✅ Compatible with Python 3.12)
+# ---------------------------------------------------------------------
+from supabase import create_client, Client
 
 SUPABASE_URL = "https://lawpdwfrsdgxidbsrrcy.supabase.co"
 SUPABASE_KEY = (
@@ -39,7 +40,7 @@ except Exception as e:
     logging.exception("❌ Supabase init failed: %s", e)
 
 # ---------------------------------------------------------------------
-# Telegram / Flask basic setup
+# Telegram / Flask Basic Setup
 # ---------------------------------------------------------------------
 TOKEN = "8221827250:AAHzEw4nwBnIvoXsJbfF5hbQ2vnmNJq2i0U"
 WEBHOOK_SECRET = "my-super-secret"
@@ -55,7 +56,9 @@ log = logging.getLogger("numberinfo-bot")
 
 app = Flask(__name__)
 
-# Telegram HTTP session
+# ---------------------------------------------------------------------
+# Telegram HTTP Session
+# ---------------------------------------------------------------------
 TELEGRAM_API = f"https://api.telegram.org/bot{TOKEN}"
 session = requests.Session()
 retries = Retry(
