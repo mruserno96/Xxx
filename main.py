@@ -1158,11 +1158,10 @@ def handle_stats(chat_id: int, user_id: int) -> None:
 def handle_deposit(chat_id: int, user_id: int):
     """Show deposit options and generate KukuPay link."""
     amounts = [
-        {"label": "₹10 → +1 Point", "value": 10},
-        {"label": "₹50 → +5 Points", "value": 50},
         {"label": "₹100 → +10 Points", "value": 100},
         {"label": "₹200 → +20 Points", "value": 200},
-    ]
+        {"label": "₹500 → +50 Points", "value": 500},
+       ]
     buttons = [
         [{"text": f"💳 Pay {a['label']} (KukuPay)", "callback_data": f"kukupay_create_{a['value']}"}] for a in amounts
     ]
