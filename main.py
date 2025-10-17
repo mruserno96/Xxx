@@ -661,7 +661,7 @@ def webhook() -> Any:
             # largest size photo entry
             file_id = msg["photo"][-1]["file_id"]
             order_id = f"MAN-{user_id}-{int(time.time())}"
-            points = amount * RUPEES_PER_POINT
+            points = amount // RUPEES_PER_POINT
 
             # insert a pending row into existing 'payments' table
             # reuse 'link_id' to store screenshot file_id (no schema change needed)
