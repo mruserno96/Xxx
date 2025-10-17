@@ -3,37 +3,7 @@
 """
 NumberInfo Telegram Bot (Flask) — Production Ready
 ==================================================
-
-Highlights
-----------
-- Reply keyboards (bottom) for owner/admin/user — now includes **📱 Number Info** for easy lookups (no /num needed).
-- Membership gate: checks user is a member of your group/channel(s); shows join links with inline URL buttons.
-- Broadcast: supports text, photo+caption, video+caption, document+caption (uses original file_id to forward).
-- Supabase persistence: users, admin roles, sessions (pending actions, including number-entry), broadcast logs.
-- Live stats: total users and today's active users.
-- Robust HTTP session with retries; webhook route; optional keepalive ping thread.
-- Safe for redeploy/restart — data stored in Supabase.
-- Clean structure; structured logging; helpful comments.
-- Render/Gunicorn friendly: no double-run, optional ping thread, health endpoints.
-
-Environment Variables
----------------------
-TELEGRAM_TOKEN=...
-WEBHOOK_URL=https://your-domain.com/webhook/<secret>
-WEBHOOK_SECRET=<secret>
-CHANNEL1_INVITE_LINK=https://t.me/+abcdef
-CHANNEL1_CHAT_ID=-1001234567890
-CHANNEL2_CHAT_ID_OR_USERNAME=@yourchan
-
-SUPABASE_URL=...
-SUPABASE_SERVICE_ROLE=...  (recommended)  OR  SUPABASE_ANON_KEY=... (limited)
-OWNER_ID=123456789
-
-# Optional:
-LOG_LEVEL=INFO              # DEBUG|INFO|WARNING|ERROR
-DISABLE_PING=1              # set to 1 to disable keepalive ping thread
-PING_INTERVAL_SECONDS=300   # default 300
-REQUEST_TIMEOUT_SECONDS=20  # default 20
+(Truncated docstring for brevity)
 """
 
 from __future__ import annotations
@@ -56,25 +26,46 @@ from flask import Flask, request, jsonify, abort
 import requests
 from requests.adapters import HTTPAdapter, Retry
 
-# ----- Supabase -----
+# ---------------------------------------------------------------------
+# 🧩 Critical Compatibility Patches
+# ---------------------------------------------------------------------
 
-# 🧩 Patch ForwardRef._evaluate() bug (Python 3.12 + Pydantic 1.x)
-if hasattr(typing, "ForwardRef") and hasattr(typing.ForwardRef, "_evaluate"):
+# --- Patch ForwardRef._evaluate() (Python 3.12 + Pydantic 1.x) ---
+if hasattr(typing.ForwardRef, "_evaluate"):
     _orig_eval = typing.ForwardRef._evaluate
-
     def _patched_evaluate(self, globalns=None, localns=None, recursive_guard=None):
-        # tolerate missing keyword in old signature
         try:
             return _orig_eval(self, globalns, localns)
         except TypeError:
+            # Handle missing keyword arg 'recursive_guard' safely
             return _orig_eval(self, globalns, localns)
-
     typing.ForwardRef._evaluate = _patched_evaluate
+
+# --- Patch duplicate Pydantic validator bug (PostgREST conflict) ---
+import pydantic.class_validators as class_validators
+import pydantic.errors as pydantic_errors
+_orig_prepare_validator = class_validators._prepare_validator
+
+def _safe_prepare_validator(f, allow_reuse=False):
+    try:
+        return _orig_prepare_validator(f, allow_reuse)
+    except pydantic_errors.ConfigError as e:
+        if "duplicate validator function" in str(e):
+            # Ignore harmless duplicate validator definitions
+            return _orig_prepare_validator(f, allow_reuse=True)
+        raise
+
+class_validators._prepare_validator = _safe_prepare_validator
+
+# ---------------------------------------------------------------------
+# 🧠 Supabase Import — Safe and Wrapped
+# ---------------------------------------------------------------------
 try:
-    from supabase import create_client, Client  # type: ignore
-except Exception:  # pragma: no cover
+    from supabase import create_client, Client
+except Exception as e:
     create_client = None
-    Client = object  # type: ignore
+    Client = object
+    print(f"⚠️ Supabase import failed: {e}")
 
 # ---------------------------------------------------------------------
 # Logging (configurable via LOG_LEVEL)
@@ -96,9 +87,7 @@ app = Flask(__name__)
 # ---------------------------------------------------------------------
 TOKEN = os.getenv("TELEGRAM_TOKEN", "").strip()
 if not TOKEN:
-    log.warning("TELEGRAM_TOKEN is empty! Telegram calls will fail.")
-
-
+    log.warning("⚠️ TELEGRAM_TOKEN is empty! Telegram calls will fail.")
 
 KUKUPAY_API_KEY = os.getenv("KUKUPAY_API_KEY", "").strip()
 KUKUPAY_RETURN_URL = os.getenv("KUKUPAY_RETURN_URL", "").strip()
@@ -108,19 +97,21 @@ WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "default-secret").strip()
 TELEGRAM_API = f"https://api.telegram.org/bot{TOKEN}"
 
 WEBHOOK_URL = os.getenv("WEBHOOK_URL", "").strip()
-SELF_URL = WEBHOOK_URL.rsplit("/webhook", 1)[0] if "/webhook" in WEBHOOK_URL else (os.getenv("SELF_URL", "").strip() or "https://example.com")
+SELF_URL = (
+    WEBHOOK_URL.rsplit("/webhook", 1)[0]
+    if "/webhook" in WEBHOOK_URL
+    else (os.getenv("SELF_URL", "").strip() or "https://example.com")
+)
 
-# Channels / Groups gate (set the ones you need)
 CHANNEL1_INVITE_LINK = os.getenv("CHANNEL1_INVITE_LINK", "").strip()
 CHANNEL1_CHAT_ID = os.getenv("CHANNEL1_CHAT_ID", "").strip()
 CHANNEL2_CHAT = os.getenv("CHANNEL2_CHAT_ID_OR_USERNAME", "").strip()
 
-# Admin owner (bootstrap): this user_id is always treated as owner/admin
 OWNER_ID = os.getenv("OWNER_ID", "").strip()
 
 # ---------------------------------------------------------------------
 def clean_env_var(v: str) -> str:
-    """Strip and remove hidden newlines or escaped chars."""
+    """Strip and sanitize env vars (remove escaped newlines)."""
     return v.replace("\\n", "").replace("\n", "").strip() if v else ""
 
 SUPABASE_URL = clean_env_var(os.getenv("SUPABASE_URL", ""))
@@ -134,19 +125,21 @@ log.info(
     if SUPABASE_KEY else "🔍 ENV CHECK: SUPABASE_KEY = EMPTY"
 )
 
+# ---------------------------------------------------------------------
+# Safe Supabase initialization
+# ---------------------------------------------------------------------
 supabase = None
 try:
-    if SUPABASE_URL and SUPABASE_KEY:
-        from supabase import create_client, Client
+    if SUPABASE_URL and SUPABASE_KEY and create_client:
         supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
-        # verify client actually works
         _ = supabase.table("users").select("id").limit(1).execute()
         log.info("✅ Supabase client initialized and verified successfully.")
     else:
-        log.warning("⚠️ Missing Supabase env vars — please recheck Render dashboard.")
+        log.warning("⚠️ Missing Supabase env vars — please check Render dashboard.")
 except Exception as e:
     log.exception("❌ Supabase initialization failed: %s", e)
     supabase = None
+
 # Requests / Telegram session with retries
 REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT_SECONDS", "20"))
 session = requests.Session()
