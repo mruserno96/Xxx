@@ -46,6 +46,7 @@ TOKEN = "8221827250:AAHzEw4nwBnIvoXsJbfF5hbQ2vnmNJq2i0U"
 WEBHOOK_SECRET = "my-super-secret"
 WEBHOOK_URL = "https://blackeye-89da.onrender.com"
 SELF_URL = "https://blackeye-89da.onrender.com"
+OWNER_ID = os.getenv("OWNER_ID")
 
 LOG_LEVEL = "DEBUG"
 logging.basicConfig(
@@ -275,7 +276,7 @@ def db_upsert_user(user: Dict[str, Any]) -> None:
             "language_code": user.get("language_code"),
             "last_seen": datetime.now(timezone.utc).isoformat(),
         }
-        sb.table("users").upsert(row).execute()  # type: ignore
+        supabase.table("users").upsert(row).execute()  # type: ignore
     except Exception as e:
         log.exception("db_upsert_user failed: %s", e)
 
