@@ -106,6 +106,10 @@ OWNER_ID = os.getenv("OWNER_ID", "").strip()
 SUPABASE_URL = os.getenv("SUPABASE_URL", "").strip()
 SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE", os.getenv("SUPABASE_ANON_KEY", "")).strip()
 
+# --- DEBUG ENV CHECKS (for Render visibility) ---
+log.info("🔍 ENV CHECK: SUPABASE_URL = %s", SUPABASE_URL)
+log.info("🔍 ENV CHECK: SUPABASE_KEY (first 8 chars) = %s", SUPABASE_KEY[:8] + "***" if SUPABASE_KEY else "EMPTY")
+
 supabase: Optional[Client] = None
 if SUPABASE_URL and SUPABASE_KEY and create_client:
     try:
