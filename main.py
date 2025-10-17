@@ -85,7 +85,7 @@ if not TOKEN:
 
 
 KUKUPAY_API_KEY = os.getenv("KUKUPAY_API_KEY", "").strip()
-KUKUPAY_RETURN_URL = os.getenv("KUKUPAY_RETURN_URL", "").strip()
+KUKUPAY_RETURN_URL = os.getenv("KUKUPAY_RETURN_URL", (f"https://t.me/{BOT_USERNAME}" if BOT_USERNAME else SELF_URL)).strip()
 KUKUPAY_WEBHOOK_SECRET = os.getenv("KUKUPAY_WEBHOOK_SECRET", "").strip()
 
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "default-secret").strip()
@@ -810,9 +810,9 @@ def webhook() -> Any:
             payload = {
                 "api_key": KUKUPAY_API_KEY,
                 "amount": amount,
-                "phone": str(user_id),  # optional: replace with actual user phone if stored
+                "phone": str(user_id),
                 "webhook_url": f"{SELF_URL}/kukupay_webhook",
-                "return_url": f"{KUKUPAY_RETURN_URL}?start={order_id}",
+                "return_url": KUKUPAY_RETURN_URL,
                 "order_id": order_id
             }
 
@@ -821,37 +821,48 @@ def webhook() -> Any:
                 r = session.post("https://kukupay.pro/pay/create", json=payload, headers=headers, timeout=15)
                 r.raise_for_status()
                 res = r.json()
-                if res.get("status") == 200:
-                    payment_url = res.get("payment_url")
-                    send_message(
-                        chat_id,
-                        f"✅ Payment link generated!\n\n💰 Amount: ₹{amount}\n📎 Tap below to complete your payment 👇",
-                        parse_mode="Markdown",
-                        reply_markup={
-                            "inline_keyboard": [
-                                [{"text": "💳 Pay Now (KukuPay)", "url": payment_url}],
-                                [{"text": "🔁 Refresh Payment Status", "callback_data": f"check_kukupay_{order_id}"}]
-                            ]
-                        },
-                    )
+                log.info("KukuPay create response: %s", res)
 
-                    if supabase:
-                        supabase.table("payments").insert({
-                            "user_id": user_id,
-                            "chat_id": chat_id,
-                            "order_id": order_id,
-                            "amount": amount,
-                            "gateway": "kukupay",
-                            "status": "created"
-                        }).execute()
+                # Adjust condition based on real response from KukuPay
+                if res.get("status") == 200 or str(res.get("status")).lower() in ("200", "success", "ok"):
+                    payment_url = res.get("payment_url") or res.get("url") or res.get("data", {}).get("payment_url")
+                    if payment_url:
+                        send_message(
+                            chat_id,
+                            f"✅ Payment link generated!\n\n💰 Amount: ₹{amount}\n📎 Tap below to complete your payment 👇",
+                            parse_mode="Markdown",
+                            reply_markup={
+                                "inline_keyboard": [
+                                    [{"text": "💳 Pay Now (KukuPay)", "url": payment_url}],
+                                    [{"text": "🔁 Refresh Payment Status", "callback_data": f"check_kukupay_{order_id}"}]
+                                ]
+                            },
+                        )
+
+                        if supabase:
+                            supabase.table("payments").insert({
+                                "user_id": user_id,
+                                "chat_id": chat_id,
+                                "order_id": order_id,
+                                "amount": amount,
+                                "gateway": "kukupay",
+                                "status": "created"
+                            }).execute()
+
+                    else:
+                        log.error("KukuPay: no payment_url in response: %s", res)
+                        send_message(chat_id, "⚠️ Payment link creation failed (no URL).")
 
                 else:
+                    log.error("KukuPay create failed status %s, response: %s", res.get("status"), res)
                     send_message(chat_id, "⚠️ Failed to create payment link. Try again later.")
+
             except Exception as e:
-                log.exception("KukuPay create failed: %s", e)
+                log.exception("KukuPay create failed exception: %s", e)
                 send_message(chat_id, "⚠️ Unable to connect to KukuPay. Try again later.")
 
             return jsonify(ok=True)
+
 
 
         elif data.startswith("copy_link_"):
