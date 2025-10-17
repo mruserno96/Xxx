@@ -45,6 +45,7 @@ import threading
 import time
 import razorpay
 import cashfree_pg
+import base64
 
 from datetime import datetime, timezone, date
 from typing import Dict, Any, Optional, List, Tuple
@@ -103,28 +104,34 @@ CHANNEL2_CHAT = os.getenv("CHANNEL2_CHAT_ID_OR_USERNAME", "").strip()
 OWNER_ID = os.getenv("OWNER_ID", "").strip()
 
 # ---------------------------------------------------------------------
-SUPABASE_URL = os.getenv("SUPABASE_URL", "").strip()
-SUPABASE_KEY = (
-    os.getenv("SUPABASE_SERVICE_ROLE", os.getenv("SUPABASE_ANON_KEY", "")) or ""
-).strip()
+def clean_env_var(v: str) -> str:
+    """Strip and remove hidden newlines or escaped chars."""
+    return v.replace("\\n", "").replace("\n", "").strip() if v else ""
+
+SUPABASE_URL = clean_env_var(os.getenv("SUPABASE_URL", ""))
+SUPABASE_KEY = clean_env_var(
+    os.getenv("SUPABASE_SERVICE_ROLE", os.getenv("SUPABASE_ANON_KEY", ""))
+)
 
 log.info(f"🔍 ENV CHECK: SUPABASE_URL = {SUPABASE_URL}")
 log.info(
     f"🔍 ENV CHECK: SUPABASE_KEY (first 8 chars) = {SUPABASE_KEY[:8]}***"
-    if SUPABASE_KEY
-    else "🔍 ENV CHECK: SUPABASE_KEY = EMPTY"
+    if SUPABASE_KEY else "🔍 ENV CHECK: SUPABASE_KEY = EMPTY"
 )
 
 supabase = None
-if SUPABASE_URL and SUPABASE_KEY:
-    try:
+try:
+    if SUPABASE_URL and SUPABASE_KEY:
         from supabase import create_client, Client
         supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
-        log.info("✅ Supabase client initialized successfully")
-    except Exception as e:
-        log.exception("❌ Supabase init failed: %s", e)
-else:
-    log.warning("⚠️ Supabase not configured — please check env vars in Render dashboard.")
+        # verify client actually works
+        _ = supabase.table("users").select("id").limit(1).execute()
+        log.info("✅ Supabase client initialized and verified successfully.")
+    else:
+        log.warning("⚠️ Missing Supabase env vars — please recheck Render dashboard.")
+except Exception as e:
+    log.exception("❌ Supabase initialization failed: %s", e)
+    supabase = None
 # Requests / Telegram session with retries
 REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT_SECONDS", "20"))
 session = requests.Session()
