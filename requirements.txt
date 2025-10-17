@@ -6,7 +6,7 @@ supabase
 razorpay
 
 python-telegram-bot
-supabase==2.5.1
+supabase==1.0.3
 httpx==0.24.1
 pydantic==1.10.13
 cashfree-pg==4.2.4
