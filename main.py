@@ -1749,7 +1749,19 @@ else:
     log.info("Keepalive ping thread disabled by env.")
 
 
-
+@app.route(f"/webhook/{WEBHOOK_SECRET}", methods=["POST"])
+def webhook() -> Any:
+    try:
+        update = request.get_json(force=True, silent=True)
+        if not update:
+            return jsonify(ok=False, error="no update")
+        log.info("Incoming update keys: %s", list(update.keys()))
+        ...
+        # (your existing logic here)
+        return jsonify(ok=True)
+    except Exception as e:
+        log.exception("Webhook crashed: %s", e)
+        return jsonify(ok=False, error=str(e)), 200
 
 
 
