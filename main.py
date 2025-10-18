@@ -599,11 +599,15 @@ def version() -> Any:
 
 @app.route(f"/webhook/{WEBHOOK_SECRET}", methods=["POST"])
 def webhook() -> Any:
+
+
+
     update = request.get_json(force=True, silent=True)
     if not update:
         return jsonify(ok=False, error="no update")
 
     log.info("Incoming update keys: %s", list(update.keys()))
+    # ✅ Fallback for unhandled update types (like my_chat_member, edited_message, etc.)
 
     # Track user whenever possible
     if "message" in update:
@@ -1074,6 +1078,14 @@ def webhook() -> Any:
 
             answer_callback(callback_id, text="UPI details sent!")
             return jsonify(ok=True)
+        
+        try:
+                utype = next(iter(update.keys() - {"update_id"}), "unknown")
+                log.info("Unhandled update type: %s", utype)
+        except Exception:
+                log.info("Unhandled update with no type info.")
+
+        return jsonify(ok=True)
 # ---------------------------------------------------------------------
 # Command Handlers
 # ---------------------------------------------------------------------
